@@ -69,6 +69,7 @@ class AnthropicLLM(LLMClient):
             output_tokens=getattr(usage, "output_tokens", 0) or 0,
             cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
             truncated=resp.stop_reason == "max_tokens",
+            served_model=getattr(resp, "model", None),
         )
 
     def _send(self, params: dict[str, Any]) -> Any:

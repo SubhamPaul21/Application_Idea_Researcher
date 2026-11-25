@@ -130,17 +130,18 @@ def generate(cluster_id: int, writer: LLMClient) -> int:
     existence = json.loads(c["existence"]) if c.get("existence") else None
     cap = int(config.settings().get("pipeline", {}).get("spec_max_tokens", 5000))
     body = writer.complete_text(config.prompt("spec"), _prompt(c, members, existence), max_tokens=cap, task="spec")
+    served = writer.last_served_model  # record the model that really wrote it (fallbacks can substitute one)
     if not body.strip():
         raise ValueError("The model returned an empty spec; nothing was saved.")
     title = one_line(c["title"])
     header = (f"# {title}\n\n> {one_line(c['app_concept'])}\n\n_App type: {c['app_type']} · Audience: "
-              f"{c['audience']} · Build effort: {c['build_effort']} · Generated {iso(utcnow())[:10]} by {writer.name}_")
+              f"{c['audience']} · Build effort: {c['build_effort']} · Generated {iso(utcnow())[:10]} by {writer.provider}/{served}_")
     # clean_markdown drops images, hidden constructs and non-http(s) links, so the saved file and the
     # preview contain the same visible content.
     markdown = clean_markdown("\n\n".join([header, body, _evidence(c, members), _attribution(members)])) + "\n"
-    contract = _contract(title, c, members, writer.provider, writer.model)
+    contract = _contract(title, c, members, writer.provider, served)
     with db.session() as conn:
-        return db.insert_spec(conn, cluster_id, title, markdown, writer.provider, writer.model, contract)
+        return db.insert_spec(conn, cluster_id, title, markdown, writer.provider, served, contract)
 
 
 def _write_new(path: Path, text: str) -> None:

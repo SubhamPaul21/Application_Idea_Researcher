@@ -1,6 +1,7 @@
 """Provider presets and the single entry point `make_llm`."""
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -68,6 +69,20 @@ def _normalize_url(url: str | None) -> tuple[str, str, int | None, str] | None:
     return (p.scheme.lower(), (p.hostname or "").lower(), port, p.path.rstrip("/"))
 
 
+def secure_or_local(url: str) -> bool:
+    """True for https URLs and for plain http to this computer (loopback), where nothing crosses a network."""
+    parts = urlsplit(url.strip())
+    if parts.scheme.lower() == "https":
+        return True
+    host = (parts.hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def url_is_configured(provider: str, base_url: str | None) -> bool:
     """True when base_url is empty or the same endpoint the operator configured for this provider."""
     if not base_url or not base_url.strip():
@@ -131,12 +146,16 @@ def make_llm(provider: str, model: str, *, api_key: str | None = None, base_url:
         url = base_url or default_base_url(provider)
         if not url:
             raise LLMError("Set a base URL for the custom endpoint (CUSTOM_LLM_BASE_URL)")
-        client = OpenAICompatLLM(provider, model, base_url=url, api_key=resolve_key(provider, api_key, url),
+        key = resolve_key(provider, api_key, url)
+        if key and not secure_or_local(url):
+            raise LLMError(f"Refusing to send an API key over plain http to {urlsplit(url).hostname}. "
+                           "Use an https:// URL (plain http is only allowed for servers on this computer).")
+        client = OpenAICompatLLM(provider, model, base_url=url, api_key=key,
                                  json_mode=preset.get("json_mode", "json_object"),
                                  max_tokens_param=preset.get("max_tokens_param", "max_tokens"))
     if track_usage:
         def _record(c: LLMClient, task: str, res: LLMResult) -> None:
-            db.record_usage(role, task, c.provider, c.model, res.input_tokens, res.output_tokens,
+            db.record_usage(role, task, c.provider, res.served_model or c.model, res.input_tokens, res.output_tokens,
                             res.cache_read_tokens)
         client.on_usage = _record
     return client

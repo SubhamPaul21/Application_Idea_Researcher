@@ -114,9 +114,11 @@ def classify_rows(llm: LLMClient, rows: list[dict[str, Any]], max_chars: int,
     return cards
 
 
-def _run_batch(llm: LLMClient, rows: list[dict[str, Any]], max_chars: int) -> tuple[list[ProblemCard], list[Failure]]:
+def _run_batch(llm: LLMClient, rows: list[dict[str, Any]],
+               max_chars: int) -> tuple[list[ProblemCard], list[Failure], str]:
     failures: list[Failure] = []
-    return classify_rows(llm, rows, max_chars, failures), failures
+    cards = classify_rows(llm, rows, max_chars, failures)
+    return cards, failures, llm.last_served_model  # per-thread: the model that actually answered this batch
 
 
 def _clear_text_sources() -> set[str]:
@@ -141,9 +143,9 @@ def run(llm: LLMClient, niche_ids: list[str], *, max_items: int, batch_size: int
         for i, fut in enumerate(as_completed(futures), 1):
             batch = futures[fut]
             try:
-                cards, failures = fut.result()
+                cards, failures, served = fut.result()
             except Exception as e:  # noqa: BLE001 - one bad batch must not stop the run
-                cards, failures = [], [(r["id"], f"{type(e).__name__}: {e}") for r in batch]
+                cards, failures, served = [], [(r["id"], f"{type(e).__name__}: {e}") for r in batch], llm.model
                 log(f"  batch failed unexpectedly: {type(e).__name__}")
             if failures:
                 failed_batches += 1
@@ -151,7 +153,7 @@ def run(llm: LLMClient, niche_ids: list[str], *, max_items: int, batch_size: int
                 log(f"  {len(failures)} item(s) could not be classified: {failures[0][1][:160]}")
             with db.session() as conn:
                 if cards:
-                    db.save_cards(conn, cards, llm.provider, llm.model)
+                    db.save_cards(conn, cards, llm.provider, served)
                     done = [c.item_id for c in cards if source_of.get(c.item_id) in clear_sources]
                     if done:
                         db.clear_text(conn, done)  # e.g. App Store reviews: keep only the paraphrased card

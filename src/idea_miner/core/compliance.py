@@ -56,7 +56,9 @@ def author_hash(source: str, author: str | None) -> str:
 
 
 def text_hash(text: str | None) -> str:
-    norm = re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+    # Unicode-aware: letters and digits in every script count, so non-Latin posts aren't reduced to the same few
+    # ASCII characters and wrongly dropped as duplicates.
+    norm = re.sub(r"[\W_]+", " ", (text or "").casefold()).strip()
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16] if norm else ""
 
 

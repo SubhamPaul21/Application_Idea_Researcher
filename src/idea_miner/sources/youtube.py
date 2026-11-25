@@ -18,15 +18,16 @@ class YouTubeComments(Source):
     id = "youtube"
 
     def fetch(self, ctx: FetchContext) -> Iterator[RawItem]:
-        key = config.env("YOUTUBE_API_KEY")
+        # Key in a header, not the URL, so it never appears in URLs that end up in logs, proxies or error text.
+        auth = {"X-Goog-Api-Key": config.env("YOUTUBE_API_KEY") or ""}
         videos_per_term = int(self.meta.get("videos_per_term", 3))
         for term in ctx.terms("youtube_terms"):
             params = {"part": "snippet", "q": term, "type": "video", "maxResults": videos_per_term,
-                      "order": "relevance", "relevanceLanguage": "en", "key": key}
+                      "order": "relevance", "relevanceLanguage": "en"}
             if len(ctx.countries) == 1:
                 params["regionCode"] = ctx.countries[0].upper()
             try:
-                found = ctx.http.get_json(f"{API}/search", params)
+                found = ctx.http.get_json(f"{API}/search", params, headers=auth)
             except HttpError as e:
                 ctx.log(f"YouTube search '{term}': HTTP {e.status}")
                 if e.status == 403:
@@ -40,8 +41,8 @@ class YouTubeComments(Source):
                 try:
                     threads = ctx.http.get_json(f"{API}/commentThreads", {
                         "part": "snippet", "videoId": video_id, "maxResults": min(100, ctx.max_results),
-                        "order": "relevance", "textFormat": "plainText", "key": key,
-                    })
+                        "order": "relevance", "textFormat": "plainText",
+                    }, headers=auth)
                 except HttpError:
                     continue  # comments disabled on this video
                 for t in threads.get("items", []):

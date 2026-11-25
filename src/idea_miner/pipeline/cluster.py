@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import secrets
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
@@ -120,7 +121,8 @@ def build(writer: LLMClient, niche_ids: list[str], *, min_cluster_size: int, max
             if progress:
                 progress(done / len(ranked), f"Named {done} of {len(ranked)} ideas")
 
-    batch_id = utcnow().strftime("%Y%m%d-%H%M%S")
+    # Time prefix keeps batches sorted; the random suffix stops two runs in the same second from merging.
+    batch_id = f"{utcnow().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     with db.session() as conn:
         for (stats, members), summary in zip(ranked, summaries):
             db.insert_cluster(conn, batch_id, niche_ids, stats, summary or _fallback_summary(members, stats),

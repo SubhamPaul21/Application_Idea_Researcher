@@ -20,7 +20,16 @@ from ..util import iso, utcnow
 
 
 class ExistenceCheckFailed(RuntimeError):
-    """Every search failed, so no verdict can be given."""
+    """Every search failed (or none is enabled), so no verdict can be given."""
+
+
+# Each search uses the same service as a data source; a source disabled in config/sources.yaml is not searched.
+SEARCH_SOURCES = {"github": "GitHub", "apple_reviews": "App Store", "hackernews": "Show HN"}
+
+
+def enabled_searches() -> set[str]:
+    registry = config.sources_registry()
+    return {label for sid, label in SEARCH_SOURCES.items() if registry.get(sid, {}).get("enabled")}
 
 
 def gather(http: Http, terms: list[str], country: str,
@@ -39,9 +48,10 @@ def gather(http: Http, terms: list[str], country: str,
         failed.append(f"{name} '{cap(term, 40)}': HTTP {e.status or 'connection error'}")
         log(f"{name} search failed: {e}")
 
+    enabled = enabled_searches()
     for term in terms[:3]:
         gh_term = public_terms(term)
-        if gh_term:
+        if gh_term and "GitHub" in enabled:
             try:
                 data = http.get_json("https://api.github.com/search/repositories",
                                      {"q": f"{gh_term} is:public", "sort": "stars", "order": "desc", "per_page": 5},
@@ -54,25 +64,27 @@ def gather(http: Http, terms: list[str], country: str,
                          "signal": f"{r.get('stargazers_count', 0)} stars"})
             except HttpError as e:
                 fail("GitHub", term, e)
-        try:
-            data = http.get_json("https://itunes.apple.com/search",
-                                 {"term": term, "country": country, "entity": "software", "limit": 5})
-            for a in data.get("results", []):
-                add({"source": "App Store", "name": a.get("trackName", ""), "url": a.get("trackViewUrl", ""),
-                     "description": (a.get("description") or "")[:200].replace("\n", " "),
-                     "signal": f"{a.get('averageUserRating', 0):.1f}★ from {a.get('userRatingCount', 0)} ratings, "
-                               f"{a.get('formattedPrice', '')}"})
-        except HttpError as e:
-            fail("App Store", term, e)
-        try:
-            data = http.get_json("https://hn.algolia.com/api/v1/search",
-                                 {"query": term, "tags": "show_hn", "hitsPerPage": 5})
-            for h in data.get("hits", []):
-                add({"source": "Show HN", "name": h.get("title", ""),
-                     "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
-                     "description": "", "signal": f"{h.get('points') or 0} points"})
-        except HttpError as e:
-            fail("Show HN", term, e)
+        if "App Store" in enabled:
+            try:
+                data = http.get_json("https://itunes.apple.com/search",
+                                     {"term": term, "country": country, "entity": "software", "limit": 5})
+                for a in data.get("results", []):
+                    add({"source": "App Store", "name": a.get("trackName", ""), "url": a.get("trackViewUrl", ""),
+                         "description": (a.get("description") or "")[:200].replace("\n", " "),
+                         "signal": f"{a.get('averageUserRating', 0):.1f}★ from {a.get('userRatingCount', 0)} "
+                                   f"ratings, {a.get('formattedPrice', '')}"})
+            except HttpError as e:
+                fail("App Store", term, e)
+        if "Show HN" in enabled:
+            try:
+                data = http.get_json("https://hn.algolia.com/api/v1/search",
+                                     {"query": term, "tags": "show_hn", "hitsPerPage": 5})
+                for h in data.get("hits", []):
+                    add({"source": "Show HN", "name": h.get("title", ""),
+                         "url": h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}",
+                         "description": "", "signal": f"{h.get('points') or 0} points"})
+            except HttpError as e:
+                fail("Show HN", term, e)
     return out, failed
 
 
@@ -83,6 +95,9 @@ def check(cluster_id: int, writer: LLMClient, country: str = "us",
     if not cluster:
         raise ValueError(f"cluster {cluster_id} not found")
 
+    if not enabled_searches():
+        raise ExistenceCheckFailed("No search source is enabled (GitHub, App Store or Hacker News in "
+                                   "config/sources.yaml), so the existence check cannot run.")
     terms = json.loads(cluster.get("search_terms") or "[]") or [cluster["title"]]
     candidates, failed = gather(Http(), terms, country, log)
     if not candidates and failed:

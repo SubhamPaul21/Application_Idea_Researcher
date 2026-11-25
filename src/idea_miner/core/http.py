@@ -18,14 +18,19 @@ class HttpError(Exception):
         super().__init__(f"HTTP {status} from {url}" + (f": {detail}" if detail else ""))
 
 
+MAX_REDIRECTS = 3
+_DROP_ON_REBUILD = {"content-encoding", "content-length", "transfer-encoding"}
+
+
 class Http:
     def __init__(self) -> None:
         cfg = config.settings().get("http", {})
         self.client = httpx.Client(
             timeout=cfg.get("timeout_s", 30),
             headers={"User-Agent": cfg.get("user_agent", "idea-miner/0.1")},
-            follow_redirects=True,
+            follow_redirects=False,  # redirects are followed by _send(), same host only
         )
+        self.max_bytes = int(float(cfg.get("max_response_mb", 10)) * 1024 * 1024)
         self.min_interval: dict[str, float] = cfg.get("min_interval_s", {})
         self._next_slot: dict[str, float] = {}
         self._lock = threading.Lock()
@@ -38,6 +43,34 @@ class Http:
             self._next_slot[host] = slot + interval
         if slot > now:
             time.sleep(slot - now)
+
+    def _send(self, method: str, url: str, *, params: dict[str, Any] | None, headers: dict[str, str] | None,
+              json: Any) -> httpx.Response:
+        """One request with two limits: redirects are followed only within the same host (never downgrading
+        https), so credentials and queries can't be bounced elsewhere; and the body is read in chunks and
+        refused once it exceeds max_response_mb."""
+        request = self.client.build_request(method, url, params=params, headers=headers, json=json)
+        for _ in range(MAX_REDIRECTS + 1):
+            resp = self.client.send(request, stream=True)
+            try:
+                if resp.is_redirect:
+                    target = request.url.join(resp.headers.get("location", ""))
+                    if target.host != request.url.host or (request.url.scheme == "https" and target.scheme != "https"):
+                        raise HttpError(resp.status_code, url, f"refused redirect to another host ({target.host})")
+                    keep_body = resp.status_code in (307, 308)
+                    request = self.client.build_request(request.method if keep_body else "GET", target,
+                                                        headers=headers, json=json if keep_body else None)
+                    continue
+                body = bytearray()
+                for chunk in resp.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > self.max_bytes:
+                        raise HttpError(0, url, f"response larger than {self.max_bytes // (1024 * 1024)} MB refused")
+                kept = [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in _DROP_ON_REBUILD]
+                return httpx.Response(resp.status_code, headers=kept, content=bytes(body), request=request)
+            finally:
+                resp.close()
+        raise HttpError(0, url, "too many redirects")
 
     def request(
         self,
@@ -54,7 +87,7 @@ class Http:
         for attempt in range(retries + 1):
             self._throttle(host, min_interval)
             try:
-                resp = self.client.request(method, url, params=params, headers=headers, json=json)
+                resp = self._send(method, url, params=params, headers=headers, json=json)
             except httpx.TransportError as e:
                 if attempt == retries:
                     raise HttpError(0, url, type(e).__name__) from e

@@ -218,7 +218,8 @@ with tab_run:
         st.markdown(f"**Sources:** {', '.join(REGISTRY[s]['label'] for s in params.source_ids) or 'none'}  \n"
                     f"**Window:** last {days} days · **Region:** {region} · "
                     f"**Classifier:** {clf_cfg['provider']}/{clf_cfg['model'] or '?'} · "
-                    f"**Writer:** {wr_cfg['provider']}/{wr_cfg['model'] or '?'}")
+                    f"**Writer:** {wr_cfg['provider']}/{wr_cfg['model'] or '?'}"
+                    + (f" · **Idea naming:** {hp_cfg['provider']}/{hp_cfg['model'] or '?'}" if use_helper else ""))
         st.caption(f"{pending} collected items in these niches are waiting for classification. Each run sends at "
                    f"most {max_classify} items (about {max(1, max_classify // 8)} LLM calls) to the classifier.")
 

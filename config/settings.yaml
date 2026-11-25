@@ -7,6 +7,7 @@ retention_days: 30
 http:
   user_agent: "idea-miner/0.1 (personal non-commercial research tool)"
   timeout_s: 30
+  max_response_mb: 10            # larger API responses are refused instead of filling memory
   # Minimum seconds between requests to each host (politeness + rate limits).
   min_interval_s:
     hn.algolia.com: 0.4

@@ -122,6 +122,13 @@ Other protections:
 - **Search problems are reported.** A failed existence search is never recorded as "unsolved", and GitHub searches
   are restricted to public repositories.
 - **Errors stay short.** The UI shows a brief error; the full traceback goes to the terminal.
+- **Keys stay encrypted in transit.** A key is never sent over plain `http://` to another machine; plain http is
+  allowed only for servers on this computer, or for a keyless server (for example Ollama on your LAN).
+- **Downloads are bounded.** API responses over `http.max_response_mb` (default 10) are refused, and redirects are
+  only followed within the same host. The YouTube key is sent in a header, not in the URL.
+- **The CLI rejects mistakes.** Unknown `--niche`, `--source`, `--region`, `--stages` or `--provider` values and
+  out-of-range numbers stop the run instead of being ignored.
+- **Existence checks respect your sources.** A source disabled in `config/sources.yaml` is not searched either.
 
 ## Privacy and compliance built in
 

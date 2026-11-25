@@ -183,6 +183,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "privacy_v2" not in done:
         _privacy_v2(conn)
         conn.execute("INSERT INTO schema_meta (key, value) VALUES ('privacy_v2', ?)", (iso(utcnow()),))
+    if "dedupe_v2" not in done:  # duplicate-detection hash became Unicode-aware
+        for r in _rows(conn.execute("SELECT id, title, text FROM items WHERE text_purged=0")):
+            conn.execute("UPDATE items SET text_hash=? WHERE id=?",
+                         (text_hash(f"{r['title'] or ''} {r['text'] or ''}"), r["id"]))
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('dedupe_v2', ?)", (iso(utcnow()),))
 
 
 def _privacy_v2(conn: sqlite3.Connection) -> None:

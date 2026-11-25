@@ -602,3 +602,166 @@ def test_lock_file_pins_every_dependency_with_hashes():
     assert names <= pinned, f"missing from requirements.lock: {sorted(names - pinned)}"
     blocks = _re.split(r"\n(?=[A-Za-z0-9])", lock.strip())
     assert all("--hash=sha256:" in b for b in blocks if _re.match(r"[A-Za-z0-9]", b))
+
+
+# ============================================================================= remaining hardening
+class _Web(BaseHTTPRequestHandler):
+    def do_GET(self):
+        import gzip as _gzip
+
+        if self.path == "/same":
+            self.send_response(302)
+            self.send_header("Location", "/ok")
+            self.end_headers()
+        elif self.path == "/other":
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{self.server.server_address[1]}/ok")
+            self.end_headers()
+        elif self.path == "/big":
+            body = b"x" * 5000
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            body = _gzip.compress(b'{"ok": true}')
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.fixture()
+def web():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Web)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+
+
+def test_http_client_limits_redirects_and_response_size(web):
+    from idea_miner.core.http import Http
+
+    http = Http()
+    assert http.get_json(f"{web}/ok") == {"ok": True}  # gzip still decoded
+    assert http.get_json(f"{web}/same") == {"ok": True}  # same-host redirect followed
+    with pytest.raises(HttpError, match="another host"):
+        http.get_json(f"{web}/other", retries=0)
+    http.max_bytes = 1000
+    with pytest.raises(HttpError, match="larger than"):
+        http.request("GET", f"{web}/big", retries=0)
+
+
+def test_keys_are_never_sent_over_plain_http_to_other_machines(monkeypatch):
+    assert factory.secure_or_local("https://api.example.com/v1")
+    assert factory.secure_or_local("http://localhost:11434/v1") and factory.secure_or_local("http://127.0.0.1:1/v1")
+    assert not factory.secure_or_local("http://192.168.1.20:11434/v1")
+    monkeypatch.setenv("CUSTOM_LLM_BASE_URL", "http://192.168.1.20:8000/v1")
+    monkeypatch.setenv("CUSTOM_LLM_API_KEY", "k")
+    with pytest.raises(LLMError, match="plain http"):
+        factory.make_llm("custom", "m", track_usage=False)
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY")  # a keyless LAN server (e.g. Ollama) is still allowed
+    factory.make_llm("custom", "m", track_usage=False)
+
+
+def test_youtube_key_goes_in_a_header_not_the_url(monkeypatch):
+    from idea_miner.sources import youtube
+
+    monkeypatch.setenv("YOUTUBE_API_KEY", "yt-key")
+    calls = []
+
+    class H:
+        def get_json(self, url, params=None, headers=None, **kw):
+            calls.append((url, params, headers))
+            return {"items": [{"id": {"videoId": "v1"}, "snippet": {"title": "t"}}]} if url.endswith("/search") else {"items": []}
+
+    ctx = FetchContext(niche={"keywords": ["x"]}, since=utcnow(), max_results=5, max_keywords=1, countries=["us"],
+                       http=H(), log=lambda m: None)
+    list(youtube.YouTubeComments().fetch(ctx))
+    assert len(calls) == 2
+    assert all("key" not in p and h == {"X-Goog-Api-Key": "yt-key"} for _, p, h in calls)
+
+
+def test_cli_rejects_unknown_options():
+    from typer.testing import CliRunner
+
+    runner_ = CliRunner()
+    for args in (["run", "-n", "no_such_niche"], ["run", "-n", "small_business", "--region", "Mars"],
+                 ["run", "-n", "small_business", "--stages", "fetch,explode"], ["run", "-n", "small_business", "-s", "x"],
+                 ["run", "-n", "small_business", "--days", "0"], ["run"]):
+        result = runner_.invoke(cli.app, args)
+        assert result.exit_code != 0, args
+    assert cli.validate_run_options(["small_business"], [], [], 60, "India", 10, "fetch, filter", None) == ("fetch", "filter")
+
+
+def test_cli_output_drops_control_characters(capsys):
+    cli.echo_plain("ok\x1b[2J\x07 ‮done")
+    assert capsys.readouterr().out == "ok[2J done\n"
+
+
+def test_custom_niche_ids_do_not_collide():
+    a, b = config.custom_niche_id(["दंत चिकित्सक"]), config.custom_niche_id(["牙医诊所"])
+    assert a != b and a.startswith("custom:.")
+    assert config.custom_niche_id(["Dental clinic", "Tuition"]) == config.custom_niche_id(["tuition ", "dental CLINIC"])
+    assert config.niche_label(config.custom_niche_id(["dental clinic"])) == "Custom: dental clinic"
+    assert config.niche_label(a) == "Custom: non-Latin keywords"
+
+
+def test_duplicate_detection_understands_non_latin_text():
+    from idea_miner.core.compliance import text_hash
+
+    assert text_hash("बिलिंग ऐप 2026") != text_hash("इन्वेंटरी ऐप 2026")
+    assert text_hash("Hello, World!") == text_hash("hello world")
+
+
+def test_idea_batches_in_the_same_second_stay_separate():
+    ids = set()
+    llm = Fake(lambda u, t: json.dumps({"title": "T", "problem": "p", "target_user": "t", "app_concept": "c",
+                                        "app_type": "web_app", "audience": "consumers", "build_effort": "weeks",
+                                        "search_terms": ["x"]}))
+    from idea_miner.pipeline import cluster
+
+    seed_cluster()
+    for _ in range(2):
+        ids.add(cluster.build(llm, ["small_business"], min_cluster_size=2, max_ideas=3, workers=1, log=lambda m: None))
+    assert len(ids) == 2
+
+
+def test_existence_check_skips_disabled_sources(monkeypatch):
+    registry = {k: dict(v) for k, v in config.sources_registry().items()}
+    registry["github"]["enabled"] = False
+    monkeypatch.setattr(config, "sources_registry", lambda: registry)
+    seen = []
+
+    class H:
+        def get_json(self, url, params=None, **kw):
+            seen.append(url)
+            return {"results": [], "hits": []}
+
+    existence.gather(H(), ["term"], "us", lambda m: None)
+    assert not any("github" in u for u in seen) and len(seen) == 2
+    for sid in ("apple_reviews", "hackernews"):
+        registry[sid]["enabled"] = False
+    with pytest.raises(existence.ExistenceCheckFailed, match="No search source"):
+        existence.check(seed_cluster(), Fake(lambda u, t: "{}"), log=lambda m: None)
+
+
+def test_the_model_that_actually_answered_is_recorded():
+    def fn(u, t):
+        if t == "classify":
+            return LLMResult(text=answer_all()(u, t), served_model="fallback-model")
+        return LLMResult(text="## Problem\nbody", served_model="fallback-model")
+
+    llm = Fake(fn)
+    store([item("s1")])
+    classify.run(llm, ["small_business"], max_items=5, batch_size=6, workers=2, max_chars=500, log=lambda m: None)
+    assert q("SELECT model FROM cards")[0]["model"] == "fallback-model"
+    sid = spec_writer.generate(seed_cluster(batch="sv"), llm)
+    spec = q("SELECT model, markdown, contract FROM specs WHERE id=?", sid)[0]
+    assert spec["model"] == "fallback-model" and "fake/fallback-model" in spec["markdown"]
+    assert json.loads(spec["contract"])["generated_by"] == "fake/fallback-model"

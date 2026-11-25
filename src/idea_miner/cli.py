@@ -1,6 +1,7 @@
 """Command line:  idea-miner --help"""
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from typing import Optional
@@ -37,7 +38,7 @@ def smoke() -> None:
     """Fetch a few live items from every source to prove the endpoints work today."""
     for sid in registry.implemented_ids():
         ok, msg = registry.smoke(sid)
-        typer.echo(f"{'OK  ' if ok else 'FAIL'} {sid:<14} {msg}")
+        echo_plain(f"{'OK  ' if ok else 'FAIL'} {sid:<14} {msg}")
 
 
 @app.command()
@@ -60,20 +61,60 @@ def run(
     stages: str = typer.Option("fetch,filter,classify,cluster", help="Comma-separated stages to run."),
 ) -> None:
     """Run the pipeline headless (same as 'Find app ideas' in the UI)."""
+    stage_list = validate_run_options(niche, keyword, source, days, region, max_classify, stages, provider)
     db.init()
     defaults = config.settings()["llm"]["defaults"]["classifier"]
     prov = provider or defaults["provider"]
     mdl = model or (defaults["model"] if prov == defaults["provider"] else factory.default_model(prov))
-    llm = factory.make_llm(prov, mdl, role="classifier")
+    try:
+        llm = factory.make_llm(prov, mdl, role="classifier")
+    except LLMError as e:
+        raise typer.BadParameter(str(e), param_hint="--provider/--model") from None
     params = runner.RunParams(
         niche_ids=niche, custom_keywords=keyword,
         source_ids=source or [s for s in registry.implemented_ids() if registry.get(s).available()[0]],
         days=days, region=region, max_to_classify=max_classify,
     )
-    if not params.niches():
-        raise typer.BadParameter("give at least one --niche or --keyword")
-    stats = runner.run_all(params, llm, llm, typer.echo, stages=tuple(s.strip() for s in stages.split(",")))
-    typer.echo(f"Done: {stats}")
+    stats = runner.run_all(params, llm, llm, echo_plain, stages=stage_list)
+    echo_plain(f"Done: {stats}")
+
+
+STAGES = ("fetch", "filter", "classify", "cluster")
+
+
+def validate_run_options(niche: list[str], keyword: list[str], source: list[str], days: int, region: str,
+                         max_classify: int, stages: str, provider: str | None) -> tuple[str, ...]:
+    """Fail on any unknown or out-of-range option instead of silently ignoring it."""
+    def bad(msg: str, hint: str) -> typer.BadParameter:
+        return typer.BadParameter(msg, param_hint=hint)
+
+    known_niches = {n["id"] for n in config.niches()}
+    if unknown := [n for n in niche if n not in known_niches]:
+        raise bad(f"unknown niche {unknown}; see `idea-miner niches`", "--niche")
+    if not niche and not [k for k in keyword if k.strip()]:
+        raise bad("give at least one --niche or --keyword", "--niche/--keyword")
+    if unknown := [s for s in source if s not in registry.implemented_ids()]:
+        raise bad(f"unknown source {unknown}; choose from {registry.implemented_ids()}", "--source")
+    if region not in runner.REGIONS:
+        raise bad(f"unknown region {region!r}; choose from {list(runner.REGIONS)}", "--region")
+    if not 1 <= days <= 3650:
+        raise bad("must be between 1 and 3650", "--days")
+    if not 1 <= max_classify <= 5000:
+        raise bad("must be between 1 and 5000", "--max-classify")
+    if provider and provider not in factory.PROVIDERS:
+        raise bad(f"unknown provider {provider!r}; choose from {list(factory.PROVIDERS)}", "--provider")
+    stage_list = tuple(s.strip() for s in stages.split(",") if s.strip())
+    if not stage_list or (unknown := [s for s in stage_list if s not in STAGES]):
+        raise bad(f"choose from {list(STAGES)}", "--stages")
+    return stage_list
+
+
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f​-‏‪-‮⁦-⁩]")
+
+
+def echo_plain(message: str) -> None:
+    """Print text that may contain remote content without terminal control or text-direction characters."""
+    typer.echo(_CONTROL.sub("", str(message)))
 
 
 @app.command("llm-test")
@@ -93,7 +134,7 @@ def llm_test(provider: str, model: str) -> None:
         llm = factory.make_llm(provider, model, role="test")
         cards = classify_rows(llm, rows, 1500)
     except LLMError as e:
-        typer.echo(f"FAILED: {e}", err=True)
+        typer.echo(_CONTROL.sub("", f"FAILED: {e}"), err=True)
         raise typer.Exit(1) from None
     for card in cards:
         typer.echo(card.model_dump_json(indent=2))

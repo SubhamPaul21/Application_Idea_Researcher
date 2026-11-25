@@ -1,6 +1,7 @@
 """Configuration loading: YAML files in config/, secrets from .env / environment."""
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 from functools import lru_cache
@@ -115,10 +116,19 @@ def niche_by_id(niche_id: str) -> dict[str, Any] | None:
     return None
 
 
+def custom_niche_id(keywords: list[str]) -> str:
+    """Readable ASCII part plus a hash of the normalised keyword set, so different keyword lists (including
+    non-Latin ones, whose ASCII slug is empty) never share an ID, and the same set in any order or case does."""
+    norm = sorted({k.strip().casefold() for k in keywords if k and k.strip()})
+    digest = hashlib.sha1("\x1f".join(norm).encode("utf-8")).hexdigest()[:8]
+    slug = slugify(" ".join(norm), 24)
+    return f"custom:{'' if slug == 'item' else slug}.{digest}"
+
+
 def custom_niche(keywords: list[str]) -> dict[str, Any]:
     kws = [k.strip() for k in keywords if k and k.strip()]
     return {
-        "id": "custom:" + slugify(" ".join(kws), 40),
+        "id": custom_niche_id(kws),
         "label": "Custom: " + ", ".join(kws),
         "keywords": kws,
         "github_keywords": kws,
@@ -134,5 +144,6 @@ def niche_label(niche_id: str) -> str:
     if n:
         return n["label"]
     if niche_id.startswith("custom:"):
-        return "Custom: " + niche_id[len("custom:") :].replace("-", " ")
+        slug = niche_id[len("custom:") :].rsplit(".", 1)[0]
+        return "Custom: " + (slug.replace("-", " ") if slug else "non-Latin keywords")
     return niche_id

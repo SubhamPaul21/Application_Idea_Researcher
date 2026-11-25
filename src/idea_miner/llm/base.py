@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar, get_origin
@@ -34,6 +35,7 @@ class LLMResult:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     truncated: bool = False
+    served_model: str | None = None  # the model that actually answered, when the provider reports it
 
 
 UsageHook = Callable[["LLMClient", str, LLMResult], None]
@@ -45,6 +47,12 @@ class LLMClient(ABC):
     def __init__(self, model: str) -> None:
         self.model = model
         self.on_usage: UsageHook | None = None
+        self._local = threading.local()
+
+    @property
+    def last_served_model(self) -> str:
+        """Model that answered this thread's most recent call (differs from .model after a fallback)."""
+        return getattr(self._local, "served", None) or self.model
 
     @property
     def name(self) -> str:
@@ -61,6 +69,7 @@ class LLMClient(ABC):
     def _call(self, system: str, user: str, *, max_tokens: int, task: str,
               schema: dict[str, Any] | None) -> LLMResult:
         result = self._complete(system, user, max_tokens=max_tokens, task=task, schema=schema)
+        self._local.served = result.served_model
         if self.on_usage:
             try:
                 self.on_usage(self, task, result)
