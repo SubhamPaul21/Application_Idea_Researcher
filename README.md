@@ -13,13 +13,24 @@ Sources (legal APIs) ──▶ 0 regex prefilter ──▶ 1 metadata score ─�
 
 ```powershell
 uv venv .venv --python 3.13
-uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
+uv pip sync --require-hashes --python .venv\Scripts\python.exe requirements.lock   # exact, hash-checked versions
+uv pip install --no-deps --python .venv\Scripts\python.exe -e .                    # the app itself
 copy .env.example .env          # add at least one LLM key; source keys are optional
 .venv\Scripts\idea-miner smoke  # check every data source works today
 .venv\Scripts\idea-miner ui     # opens the Streamlit app
 ```
 
-Optional: `uv pip install --python .venv\Scripts\python.exe -e ".[embeddings]"` adds sentence-transformers. It clusters
+`requirements.lock` pins every package (including test tools) to versions that passed `pip-audit` with no known
+vulnerabilities, with SHA-256 hashes so a tampered download is rejected. To upgrade deliberately:
+
+```powershell
+uv pip compile pyproject.toml --extra dev --upgrade --generate-hashes --universal --python-version 3.13 -o requirements.lock
+uvx pip-audit --disable-pip -r requirements.lock   # check before installing
+uv pip sync --require-hashes --python .venv\Scripts\python.exe requirements.lock
+uv pip install --no-deps --python .venv\Scripts\python.exe -e .
+```
+
+Optional (not in the lock): `uv pip install --python .venv\Scripts\python.exe -e ".[embeddings]"` adds sentence-transformers. It clusters
 better and handles Hindi and Hinglish, but PyTorch is about 2 GB. Without it, clustering uses TF-IDF.
 
 ## Using the app

@@ -588,3 +588,17 @@ def test_claude_requires_an_explicit_key_and_ignores_ambient_credentials(monkeyp
     llm = factory.make_llm("anthropic", "claude-opus-5-5", api_key="typed-key", track_usage=False)
     assert str(llm.client.base_url).startswith("https://api.anthropic.com")
     assert llm.client.api_key == "typed-key" and llm.client.auth_token is None
+
+
+def test_lock_file_pins_every_dependency_with_hashes():
+    import re as _re
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    wanted = project["dependencies"] + project["optional-dependencies"]["dev"]
+    names = {_re.split(r"[<>=!~\[ ;]", d, maxsplit=1)[0].lower().replace("_", "-") for d in wanted}
+    lock = (ROOT / "requirements.lock").read_text(encoding="utf-8")
+    pins = dict(_re.findall(r"^([A-Za-z0-9_.-]+)==([^\s;]+)", lock, _re.M))
+    pinned = {k.lower().replace("_", "-") for k in pins}
+    assert names <= pinned, f"missing from requirements.lock: {sorted(names - pinned)}"
+    blocks = _re.split(r"\n(?=[A-Za-z0-9])", lock.strip())
+    assert all("--hash=sha256:" in b for b in blocks if _re.match(r"[A-Za-z0-9]", b))
