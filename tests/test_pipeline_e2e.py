@@ -73,7 +73,7 @@ def test_full_pipeline(tmp_path):
     llm = FakeLLM()
     stats = classify.run(llm, ["small_business"], max_items=50, batch_size=4, workers=2, max_chars=500,
                          log=logs.append)
-    assert stats == {"classified": 6, "problems": 6, "failed_batches": 0}
+    assert stats == {"classified": 6, "problems": 6, "failed_batches": 0, "failed_items": 0}
     # nothing left to classify on a second run
     assert classify.run(llm, ["small_business"], max_items=50, batch_size=4, workers=2, max_chars=500,
                         log=logs.append)["classified"] == 0

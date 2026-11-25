@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from .. import config
 from ..core import db
@@ -56,17 +57,39 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 
-def resolve_key(provider: str, override: str | None = None) -> str | None:
+def _normalize_url(url: str | None) -> tuple[str, str, int | None, str] | None:
+    if not url or not url.strip():
+        return None
+    p = urlsplit(url.strip())
+    try:
+        port = p.port or {"http": 80, "https": 443}.get(p.scheme.lower())
+    except ValueError:
+        return ("invalid", url.strip(), None, "")
+    return (p.scheme.lower(), (p.hostname or "").lower(), port, p.path.rstrip("/"))
+
+
+def url_is_configured(provider: str, base_url: str | None) -> bool:
+    """True when base_url is empty or the same endpoint the operator configured for this provider."""
+    if not base_url or not base_url.strip():
+        return True
+    return _normalize_url(base_url) == _normalize_url(default_base_url(provider))
+
+
+def resolve_key(provider: str, override: str | None = None, base_url: str | None = None) -> str | None:
+    """A key typed in this session always wins. A key from .env is only used with the endpoint configured next to
+    it, so a session that types a different base URL cannot make the app send the stored key there."""
     if override:
         return override
+    if not url_is_configured(provider, base_url):
+        return None
     return config.env(PROVIDERS[provider].get("key_env"))
 
 
-def key_available(provider: str, override: str | None = None) -> bool:
+def key_available(provider: str, override: str | None = None, base_url: str | None = None) -> bool:
     preset = PROVIDERS[provider]
     if not preset.get("key_env"):
         return True  # local servers
-    return bool(resolve_key(provider, override))
+    return bool(resolve_key(provider, override, base_url))
 
 
 def default_model(provider: str) -> str:
@@ -107,7 +130,7 @@ def make_llm(provider: str, model: str, *, api_key: str | None = None, base_url:
         url = base_url or default_base_url(provider)
         if not url:
             raise LLMError("Set a base URL for the custom endpoint (CUSTOM_LLM_BASE_URL)")
-        client = OpenAICompatLLM(provider, model, base_url=url, api_key=resolve_key(provider, api_key),
+        client = OpenAICompatLLM(provider, model, base_url=url, api_key=resolve_key(provider, api_key, url),
                                  json_mode=preset.get("json_mode", "json_object"),
                                  max_tokens_param=preset.get("max_tokens_param", "max_tokens"))
     if track_usage:

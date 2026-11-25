@@ -38,6 +38,15 @@ class OpenAICompatLLM(LLMClient):
         headers = {"X-Title": "idea-miner"} if provider == "openrouter" else None
         self.client = OpenAI(api_key=api_key or "not-needed", base_url=base_url, max_retries=4,
                              timeout=300, default_headers=headers)
+        if provider != "openai":
+            # The SDK also reads OPENAI_ORG_ID, OPENAI_PROJECT_ID and OPENAI_CUSTOM_HEADERS from the environment and
+            # sends them to whatever base URL it is given. Those belong to OpenAI only: drop them for other providers.
+            self.client.organization = None
+            self.client.project = None
+            if hasattr(self.client, "_custom_headers"):
+                self.client._custom_headers = dict(headers or {})
+            if hasattr(self.client, "_ambient_authorizations"):
+                self.client._ambient_authorizations = frozenset()
 
     def _build(self, system: str, user: str, max_tokens: int,
                schema: dict[str, Any] | None) -> tuple[list[dict[str, str]], dict[str, Any]]:

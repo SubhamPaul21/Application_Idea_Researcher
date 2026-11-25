@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # works without `pip install -e .`
@@ -12,6 +13,7 @@ import streamlit as st  # noqa: E402
 
 from idea_miner import config  # noqa: E402
 from idea_miner.core import db  # noqa: E402
+from idea_miner.core.safe_text import clean_markdown, md_escape, md_link, neutralize_formulas  # noqa: E402
 from idea_miner.core.schemas import AUDIENCES, EFFORTS, SOFTWARE_APP_TYPES  # noqa: E402
 from idea_miner.llm import factory  # noqa: E402
 from idea_miner.llm.base import LLMClient, LLMError  # noqa: E402
@@ -21,13 +23,21 @@ from idea_miner.sources import registry  # noqa: E402
 st.set_page_config(page_title="App Idea Researcher", page_icon="💡", layout="wide")
 
 
-@st.cache_resource
-def _bootstrap() -> int:
-    db.init()
-    return db.purge_expired(int(config.settings().get("retention_days", 30)))
+db.init()  # idempotent and cheap: creates missing tables and applies pending migrations
 
 
-_bootstrap()
+@st.cache_resource(ttl=3600)  # re-runs at most hourly in a long-lived app, so the retention purge keeps happening
+def _hourly_purge(data_dir: str) -> int:
+    return db.purge_expired(db.retention_days())
+
+
+_hourly_purge(str(config.data_dir()))
+
+
+def show_error(prefix: str, e: BaseException) -> None:
+    """Short, literal error in the UI; the full traceback goes to the terminal only."""
+    traceback.print_exception(e, file=sys.stderr)
+    st.error(f"{prefix}: {md_escape(f'{type(e).__name__}: {e}', 400)}")
 
 APP_TYPE_LABELS = {
     "script": "Script / automation", "cli": "Command-line tool", "web_app": "Web app",
@@ -70,13 +80,15 @@ def llm_picker(role: str, prefix: str, default_provider: str, default_model: str
     models_key = f"{prefix}_models_{prov}"
     initial = default_model if prov == default_provider else factory.default_model(prov)
 
-    key_override = None
-    if not factory.key_available(prov):
-        key_override = st.text_input(f"{preset['key_env']} (this session only)", type="password",
-                                     key=f"{prefix}_key_{prov}") or None
     base_url = None
     if prov == "custom" or preset["kind"] == "openai" and prov in ("ollama", "lmstudio"):
         base_url = st.text_input("Base URL", value=factory.default_base_url(prov), key=f"{prefix}_url_{prov}")
+    key_override = None
+    if not factory.key_available(prov, base_url=base_url):
+        if preset.get("key_env") and config.env(preset["key_env"]) and not factory.url_is_configured(prov, base_url):
+            st.caption("This URL differs from the one in .env, so the stored key is not sent to it.")
+        key_override = st.text_input(f"{preset['key_env']} (this session only)", type="password",
+                                     key=f"{prefix}_key_{prov}") or None
 
     if st.session_state.get(models_key):
         options = st.session_state[models_key]
@@ -93,8 +105,8 @@ def llm_picker(role: str, prefix: str, default_provider: str, default_model: str
             st.session_state[models_key] = client.list_models()
             st.rerun()
         except Exception as e:  # noqa: BLE001
-            st.error(f"Could not list models: {e}")
-    if not factory.key_available(prov, key_override):
+            show_error("Could not list models", e)
+    if not factory.key_available(prov, key_override, base_url):
         st.warning(f"No API key: set {preset['key_env']} in .env or paste it above.")
     return {"provider": prov, "model": (model or "").strip(), "api_key": key_override, "base_url": base_url}
 
@@ -164,7 +176,7 @@ def make(cfg: dict, role: str) -> LLMClient | None:
         return factory.make_llm(cfg["provider"], cfg["model"], api_key=cfg["api_key"], base_url=cfg["base_url"],
                                 role=role)
     except LLMError as e:
-        st.error(str(e))
+        st.error(md_escape(str(e), 400))
         return None
 
 
@@ -241,13 +253,13 @@ with tab_run:
             st.stop()
         with st.status("Working…", expanded=True) as status:
             bar = st.progress(0.0)
-            log = status.write
+            log = status.text  # plain text: log lines can contain remote error messages
             prog = lambda frac, text: bar.progress(min(max(frac, 0.0), 1.0), text=text)  # noqa: E731
             try:
                 if needs_llm:
                     result = runner.run_all(params, classifier, writer, log, prog, stages=stages, helper=helper)
                 else:
-                    result = {}
+                    result = {"purged": runner.purge_stage(log)}
                     if "fetch" in stages:
                         result["fetch"] = runner.fetch_stage(params, log, prog)
                     if "filter" in stages:
@@ -257,7 +269,7 @@ with tab_run:
                     st.success("New ideas are ready in the **Ideas** tab.")
             except Exception as e:  # noqa: BLE001
                 status.update(label="Failed", state="error")
-                st.exception(e)
+                show_error("The run failed (details are in the terminal)", e)
 
     with db.session() as conn:
         runs = db.recent_runs(conn, 8)
@@ -292,10 +304,12 @@ with tab_ideas:
         shown.sort(key=lambda c: c[key] or 0, reverse=True)
         st.caption(f"Showing {len(shown)} of {len(clusters)} ideas that match **{idea_type}** and your filters.")
 
+        # Titles, problems, concepts, gaps and statements are model output derived from strangers' posts:
+        # md_escape shows them literally (no images, links, headings or colours).
         for rank, c in enumerate(shown, 1):
             with st.container(border=True):
                 head = st.columns([6, 1])
-                head[0].markdown(f"#### {rank}. {c['title']}")
+                head[0].markdown(f"#### {rank}. {md_escape(c['title'])}")
                 head[1].metric("Score", f"{c['score']:.1f}")
                 st.caption(" · ".join([
                     APP_TYPE_LABELS.get(c["app_type"], c["app_type"]),
@@ -305,25 +319,28 @@ with tab_ideas:
                     f"pays: {c['wtp_any_share']:.0%}",
                     "via " + ", ".join(REGISTRY.get(s, {}).get("label", s) for s in json.loads(c["sources"] or "[]")),
                 ]))
-                st.markdown(f"**Problem:** {c['problem']}")
+                st.markdown(f"**Problem:** {md_escape(c['problem'])}")
                 if c["app_concept"]:
-                    st.markdown(f"**Idea:** {c['app_concept']}")
-                st.markdown(f"**For:** {c['target_user']}")
+                    st.markdown(f"**Idea:** {md_escape(c['app_concept'])}")
+                st.markdown(f"**For:** {md_escape(c['target_user'])}")
 
                 if c.get("existence"):
                     ex = json.loads(c["existence"])
-                    st.markdown(f"**Already exists?** {VERDICT_BADGE.get(ex['verdict'], ex['verdict'])}: "
-                                f"{ex.get('opportunity', '')}")
+                    st.markdown(f"**Already exists?** {VERDICT_BADGE.get(ex['verdict'], md_escape(ex['verdict']))}: "
+                                f"{md_escape(ex.get('opportunity', ''))}")
+                    if ex.get("incomplete"):
+                        st.warning("Some searches failed, so this check is incomplete: "
+                                   + md_escape("; ".join(ex.get("failed_searches", [])), 300))
                     for a in ex.get("closest_alternatives", []):
-                        st.markdown(f"- [{a['name']}]({a['url']}): {a['gap']}")
+                        st.markdown(f"- {md_link(a['name'], a['url'])}: {md_escape(a['gap'])}")
 
                 with st.expander(f"Evidence ({c['size']} reports)"):
                     with db.session() as conn:
                         members = db.cluster_members(conn, c["id"])
                     for mem in members:
                         label = REGISTRY.get(mem["source"], {}).get("label", mem["source"])
-                        st.markdown(f"- {mem['problem_statement']} · *severity {mem['severity']}, "
-                                    f"pays: {mem['willingness_to_pay']}* · [{label}]({mem['url']})")
+                        st.markdown(f"- {md_escape(mem['problem_statement'])} · *severity {mem['severity']}, "
+                                    f"pays: {md_escape(mem['willingness_to_pay'])}* · {md_link(label, mem['url'])}")
 
                 b = st.columns([1, 1, 3])
                 if b[0].button("Check if it exists", key=f"ex_{c['id']}"):
@@ -333,8 +350,10 @@ with tab_ideas:
                             try:
                                 existence.check(c["id"], w, country=country, log=lambda _m: None)
                                 st.rerun()
+                            except existence.ExistenceCheckFailed as e:
+                                st.error(md_escape(str(e), 400))
                             except Exception as e:  # noqa: BLE001
-                                st.error(f"Existence check failed: {e}")
+                                show_error("Existence check failed", e)
                 if b[1].button("Write PRD spec", key=f"spec_{c['id']}", type="primary"):
                     w = make(wr_cfg, "writer")
                     if w:
@@ -343,7 +362,7 @@ with tab_ideas:
                                 spec_writer.generate(c["id"], w)
                                 st.success("Draft spec saved: review it on the **Specs** tab.")
                             except Exception as e:  # noqa: BLE001
-                                st.error(f"Spec generation failed: {e}")
+                                show_error("Spec generation failed", e)
 
 # ------------------------------------------------------------------ Specs
 with tab_specs:
@@ -352,25 +371,52 @@ with tab_specs:
     if not specs:
         st.info("No specs yet. Click **Write PRD spec** on an idea.")
     else:
-        spec_row = st.selectbox(
-            "Spec", specs,
-            format_func=lambda s: f"#{s['id']} {s['title']} [{s['status']}] · {s['created_at'][:10]} · {s['model']}")
-        with db.session() as conn:
-            spec = db.get_spec(conn, spec_row["id"])
+        by_id = {s["id"]: s for s in specs}
+        # Keyed by spec ID: the selection stays on the same spec when other specs are added or change status.
+        spec_id = st.selectbox(
+            "Spec", list(by_id), key="spec_pick",
+            format_func=lambda i: f"#{i} {by_id[i]['title']} [{by_id[i]['status']}] · {by_id[i]['created_at'][:10]}"
+                                  f" · {by_id[i]['model']}")
+        spec = spec_writer.ensure_contract(spec_id)
+        current = spec_writer.content_hash(spec)
+        shown_key = f"spec_shown_hash_{spec_id}"
+        shown = st.session_state.get(shown_key)  # what this browser session displayed for this spec last time
+
+        flash = st.session_state.pop("spec_flash", None)
+        if flash:
+            getattr(st, flash[0])(flash[1])
         actions = st.columns([1, 1, 1, 3])
-        if actions[0].button("Approve & save", type="primary", disabled=spec["status"] == "approved"):
-            path = spec_writer.approve(spec["id"])
-            st.success(f"Saved {path} (+ JSON contract for build agents)")
+        # Buttons are keyed per spec: a click on one spec's button can never act on another spec.
+        if actions[0].button("Approve & save", type="primary", key=f"approve_{spec_id}",
+                             disabled=spec["status"] != "draft"):
+            try:
+                if shown != current:
+                    raise spec_writer.SpecError("This spec changed since it was shown. Review it again, then approve.")
+                path = spec_writer.approve(spec_id, expected_hash=current)
+                st.session_state["spec_flash"] = ("success", md_escape(f"Saved {path} and its JSON build contract"))
+                st.rerun()
+            except spec_writer.SpecError as e:
+                st.error(md_escape(str(e)))
+        if actions[1].button("Reject", key=f"reject_{spec_id}", disabled=spec["status"] == "rejected"):
+            moved = spec_writer.reject(spec_id)
+            msg = f"Rejected. Approved files moved to {moved}" if moved else "Rejected."
+            st.session_state["spec_flash"] = ("info", md_escape(msg))
             st.rerun()
-        if actions[1].button("Reject", disabled=spec["status"] == "rejected"):
-            spec_writer.reject(spec["id"])
-            st.rerun()
-        actions[2].download_button("Download .md", spec["markdown"], file_name=f"spec-{spec['id']}.md",
-                                   mime="text/markdown")
+        actions[2].download_button("Download .md", spec["markdown"], file_name=f"spec-{spec_id}.md",
+                                   mime="text/markdown", key=f"dl_{spec_id}")
         if spec.get("file_path"):
-            actions[3].caption(f"Saved to {spec['file_path']}")
+            where = "Saved to" if spec["status"] == "approved" else "Files moved to"
+            actions[3].caption(md_escape(f"{where} {spec['file_path']}"))
+        st.session_state[shown_key] = current
         st.divider()
-        st.markdown(spec["markdown"])
+        view_rendered, view_raw, view_contract = st.tabs(["Rendered", "Raw Markdown (exact file)", "Build contract (JSON)"])
+        with view_rendered:
+            st.markdown(clean_markdown(spec["markdown"]))
+        with view_raw:
+            st.code(spec["markdown"], language="markdown")
+        with view_contract:
+            st.json(json.loads(spec.get("contract") or "{}"), expanded=False)
+            st.caption("Approving writes exactly this Markdown and this contract (plus the approval time).")
 
 # ------------------------------------------------------------------ Problem cards
 with tab_cards:
@@ -384,11 +430,18 @@ with tab_cards:
     else:
         if only_problems:
             df = df[df["is_problem"] == 1]
-        df = df.drop(columns=["is_problem"])
+        # Text cells starting with = + - @ are prefixed with ' so spreadsheet apps never evaluate them
+        # (covers this button and the table's own download icon).
+        df = neutralize_formulas(df.drop(columns=["is_problem"]))
         st.dataframe(df, hide_index=True, width="stretch",
                      column_config={"url": st.column_config.LinkColumn("link", display_text="open"),
                                     "severity": st.column_config.NumberColumn(format="%d")})
         st.download_button("Download CSV", df.to_csv(index=False), file_name="problem_cards.csv", mime="text/csv")
+    with db.session() as conn:
+        set_aside = db.set_aside_items(conn)
+    if set_aside:
+        with st.expander(f"{len(set_aside)} item(s) set aside after repeated classification failures"):
+            st.dataframe(neutralize_formulas(pd.DataFrame(set_aside)), hide_index=True, width="stretch")
 
 # ------------------------------------------------------------------ Sources & compliance
 with tab_sources:
@@ -419,10 +472,14 @@ with tab_sources:
     st.markdown("##### Privacy & retention")
     retention = int(config.settings().get("retention_days", 30))
     st.markdown(
-        f"- Usernames are stored only as salted hashes; emails, phone numbers, IDs and profile links are removed "
-        f"before storage and before any LLM call.\n"
-        f"- Raw post text is deleted after **{retention} days**. Problem cards keep only paraphrases and links.\n"
-        f"- Specs cite links and paraphrases, never original text.\n"
+        f"- Author names are stored only as salted hashes. Emails, phone numbers, ID numbers, @handles and profile "
+        f"links are removed from post text and source details before storage and before any LLM call.\n"
+        f"- Each item keeps a link to the original public post, and that link identifies the account that "
+        f"posted it.\n"
+        f"- Raw post text is deleted after **{retention} days** (checked at the start of every run and hourly while "
+        f"the app is open). App Store review text is deleted as soon as its card is saved.\n"
+        f"- Problem cards keep model-written paraphrases: the model is instructed not to copy, cards that copy 12+ "
+        f"words of a post are rejected, and personal data is removed from every model-written field.\n"
         f"- Embeddings backend: **{embed.backend()}** (runs locally, no data leaves your machine).")
     if st.button("Purge expired raw text now"):
         st.success(f"Purged {db.purge_expired(retention)} items.")

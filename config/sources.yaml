@@ -52,7 +52,8 @@ sources:
     tier: 1
     access: iTunes Search API + public customer-review RSS/JSON feed
     license: Apple; paraphrase only, never republish review text
-    tos_status: public feed; store only paraphrases
+    tos_status: public feed; review text is deleted as soon as its paraphrased card is saved
+    clear_text_after_classify: true
     key_env: null
     prefilter_bypass: true
     apps_per_term: 3

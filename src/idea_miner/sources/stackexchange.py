@@ -14,6 +14,7 @@ from ..core.models import RawItem
 from .base import FetchContext, Source
 
 URL = "https://api.stackexchange.com/2.3/search/advanced"
+MAX_BACKOFF_S = 60
 
 
 class StackExchange(Source):
@@ -56,7 +57,11 @@ class StackExchange(Source):
                         )
                     got += len(items)
                     if data.get("backoff"):
-                        time.sleep(int(data["backoff"]))  # API asks clients to back off; mandatory
+                        wait = int(data["backoff"])
+                        if wait > MAX_BACKOFF_S:  # obey the API, but don't hang the whole run on a huge value
+                            ctx.log(f"Stack Exchange asked to wait {wait}s; skipping the rest of this source.")
+                            return
+                        time.sleep(wait)
                     if data.get("quota_remaining", 1) <= 2:
                         ctx.log("Stack Exchange daily quota nearly used up; add STACKAPPS_KEY for 10k/day.")
                         return

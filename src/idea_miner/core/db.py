@@ -13,6 +13,11 @@ from .. import config
 from ..util import chunks, iso, utcnow
 from .compliance import author_hash, scrub, text_hash
 from .models import RawItem
+from .safe_text import cap, one_line
+
+TITLE_MAX = 500
+TEXT_MAX = 8000
+EXTRA_STRING_MAX = 2000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -137,6 +142,7 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path(), timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA secure_delete=ON")  # deleted text is overwritten, not left in free pages
     return conn
 
 
@@ -156,6 +162,77 @@ def session() -> Iterator[sqlite3.Connection]:
 def init() -> None:
     with session() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive schema changes plus one-time data clean-ups. Safe to run on every start."""
+    if "contract" not in _columns(conn, "specs"):
+        conn.execute("ALTER TABLE specs ADD COLUMN contract TEXT")
+    item_cols = _columns(conn, "items")
+    if "classify_attempts" not in item_cols:
+        conn.execute("ALTER TABLE items ADD COLUMN classify_attempts INTEGER DEFAULT 0")
+    if "classify_error" not in item_cols:
+        conn.execute("ALTER TABLE items ADD COLUMN classify_error TEXT")
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)")
+    done = {r[0] for r in conn.execute("SELECT key FROM schema_meta").fetchall()}
+    if "privacy_v2" not in done:
+        _privacy_v2(conn)
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('privacy_v2', ?)", (iso(utcnow()),))
+
+
+def _privacy_v2(conn: sqlite3.Connection) -> None:
+    """Apply the 2026-11 scrubbing rules to rows stored before them."""
+    from ..sources import bluesky
+
+    for r in _rows(conn.execute("SELECT id, title, text, extra, text_purged FROM items")):
+        if r["text_purged"]:
+            conn.execute("UPDATE items SET extra=NULL WHERE id=?", (r["id"],))
+            continue
+        title = scrub((r["title"] or "")[:TITLE_MAX])
+        text = scrub(r["text"] or "")[:TEXT_MAX]
+        extra = json.dumps(scrub_tree(json.loads(r["extra"] or "{}")), default=str)
+        conn.execute("UPDATE items SET title=?, text=?, extra=?, text_hash=? WHERE id=?",
+                     (title, text, extra, text_hash(f"{title} {text}"), r["id"]))
+    for r in _rows(conn.execute("SELECT * FROM cards")):
+        fields = clean_card_fields(r["problem_statement"], r["who_has_it"], json.loads(r["existing_solutions"] or "[]"))
+        conn.execute("UPDATE cards SET problem_statement=?, who_has_it=?, existing_solutions=? WHERE item_id=?",
+                     (*fields[:2], json.dumps(fields[2]), r["item_id"]))
+    # Bluesky rows used the account DID in the ID and the handle in the link.
+    for r in _rows(conn.execute("SELECT id, source_id, url FROM items WHERE source='bluesky' AND source_id LIKE 'at://%'")):
+        new_sid = bluesky.post_key(r["source_id"])
+        new_id = f"bluesky:{new_sid}"
+        if conn.execute("SELECT 1 FROM items WHERE id=?", (new_id,)).fetchone():
+            continue
+        conn.execute("UPDATE items SET id=?, source_id=?, url=? WHERE id=?",
+                     (new_id, new_sid, bluesky.post_url(r["source_id"], r["url"]), r["id"]))
+        for table in ("item_niches", "cards", "cluster_members", "embeddings"):
+            conn.execute(f"UPDATE {table} SET item_id=? WHERE item_id=?", (new_id, r["id"]))
+
+
+def scrub_tree(value: Any) -> Any:
+    """Scrub every string inside a nested structure (the per-source `extra` details)."""
+    if isinstance(value, dict):
+        return {k: scrub_tree(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_tree(v) for v in value]
+    if isinstance(value, str):
+        return scrub(value[:EXTRA_STRING_MAX])
+    return value
+
+
+def clean_card_fields(problem_statement: Any, who_has_it: Any,
+                      existing_solutions: list[Any]) -> tuple[str, str, list[str]]:
+    """Model-written card fields: one line, personal data removed, bounded length."""
+    return (
+        cap(scrub(one_line(problem_statement)), 400),
+        cap(scrub(one_line(who_has_it)), 100),
+        [cap(scrub(one_line(s)), 60) for s in list(existing_solutions or [])[:10] if str(s or "").strip()],
+    )
 
 
 def _rows(cur: sqlite3.Cursor) -> list[dict[str, Any]]:
@@ -168,19 +245,29 @@ def _ph(n: int) -> str:
 
 # ---------------------------------------------------------------- items
 
-def upsert_items(conn: sqlite3.Connection, items: Iterable[RawItem], niche_id: str, meta: dict[str, Any]) -> int:
+def upsert_items(conn: sqlite3.Connection, items: Iterable[RawItem], niche_id: str, meta: dict[str, Any],
+                 on_skip: Any = None) -> int:
+    """Store fetched items. One malformed item is skipped (reported through on_skip) instead of failing the batch."""
     now = iso(utcnow())
     new = 0
     for it in items:
-        title, text = scrub(it.title), scrub(it.text)[:8000]
+        try:
+            # Cut to length before scrubbing so very long remote text cannot make the regexes slow.
+            title = scrub(it.title[:TITLE_MAX])
+            text = scrub(it.text[: TEXT_MAX + 200])[:TEXT_MAX]
+            row = (
+                it.id, it.source, it.source_id, it.url, title, text, text_hash(f"{title} {text}"),
+                iso(it.created_at), now, json.dumps(it.engagement), author_hash(it.source, it.author),
+                json.dumps(scrub_tree(it.extra), default=str), meta.get("license", ""), meta.get("tos_status", ""),
+            )
+        except Exception as e:  # noqa: BLE001 - one malformed item must not fail the whole batch
+            if on_skip:
+                on_skip(it, e)
+            continue
         cur = conn.execute(
             "INSERT OR IGNORE INTO items (id, source, source_id, url, title, text, text_hash, created_at, fetched_at,"
             " engagement, author_hash, extra, license, tos_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                it.id, it.source, it.source_id, it.url, title, text, text_hash(f"{title} {text}"),
-                iso(it.created_at), now, json.dumps(it.engagement), author_hash(it.source, it.author),
-                json.dumps(it.extra, default=str), meta.get("license", ""), meta.get("tos_status", ""),
-            ),
+            row,
         )
         if cur.rowcount:
             new += 1
@@ -216,51 +303,90 @@ def set_meta_scores(conn: sqlite3.Connection, scores: dict[str, float]) -> None:
     conn.executemany("UPDATE items SET meta_score=? WHERE id=?", [(s, i) for i, s in scores.items()])
 
 
+def retention_days() -> int:
+    return int(config.settings().get("retention_days", 30))
+
+
+def max_classify_attempts() -> int:
+    return int(config.settings().get("pipeline", {}).get("max_classify_attempts", 3))
+
+
+def _eligible_sql(niche_ids: list[str]) -> tuple[str, tuple[Any, ...]]:
+    """Items still waiting for a card: in these niches, passed the prefilter, text not purged, fetched inside the
+    retention window, and not set aside after repeated failures."""
+    cutoff = iso(utcnow() - timedelta(days=retention_days()))
+    sql = f"""FROM items i
+              JOIN item_niches n ON n.item_id = i.id
+              LEFT JOIN cards c ON c.item_id = i.id
+              WHERE n.niche IN ({_ph(len(niche_ids))})
+                AND i.prefilter_pass = 1 AND i.text_purged = 0 AND c.item_id IS NULL
+                AND i.fetched_at >= ? AND COALESCE(i.classify_attempts, 0) < ?"""
+    return sql, (*niche_ids, cutoff, max_classify_attempts())
+
+
 def classification_candidates(conn: sqlite3.Connection, niche_ids: list[str], limit: int) -> list[dict[str, Any]]:
     if not niche_ids:
         return []
+    where, args = _eligible_sql(niche_ids)
     return _rows(conn.execute(
-        f"""SELECT DISTINCT i.id, i.source, i.url, i.title, i.text, i.extra, i.meta_score
-            FROM items i
-            JOIN item_niches n ON n.item_id = i.id
-            LEFT JOIN cards c ON c.item_id = i.id
-            WHERE n.niche IN ({_ph(len(niche_ids))})
-              AND i.prefilter_pass = 1 AND i.text_purged = 0 AND c.item_id IS NULL
-            ORDER BY i.meta_score DESC
-            LIMIT ?""",
-        (*niche_ids, limit),
+        f"""SELECT DISTINCT i.id, i.source, i.url, i.title, i.text, i.extra, i.meta_score {where}
+            ORDER BY i.meta_score DESC LIMIT ?""",
+        (*args, max(0, limit)),
     ))
 
 
 def pending_count(conn: sqlite3.Connection, niche_ids: list[str]) -> int:
     if not niche_ids:
         return 0
-    return conn.execute(
-        f"""SELECT COUNT(DISTINCT i.id) FROM items i
-            JOIN item_niches n ON n.item_id = i.id
-            LEFT JOIN cards c ON c.item_id = i.id
-            WHERE n.niche IN ({_ph(len(niche_ids))}) AND i.prefilter_pass = 1
-              AND i.text_purged = 0 AND c.item_id IS NULL""",
-        niche_ids,
-    ).fetchone()[0]
+    where, args = _eligible_sql(niche_ids)
+    return conn.execute(f"SELECT COUNT(DISTINCT i.id) {where}", args).fetchone()[0]
+
+
+def record_classify_failures(conn: sqlite3.Connection, failures: list[tuple[str, str]]) -> None:
+    conn.executemany(
+        "UPDATE items SET classify_attempts = COALESCE(classify_attempts, 0) + 1, classify_error = ? WHERE id = ?",
+        [(cap(one_line(reason), 300), item_id) for item_id, reason in failures],
+    )
+
+
+def set_aside_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Items excluded from classification after repeated failures."""
+    return _rows(conn.execute(
+        """SELECT i.id, i.source, i.url, i.classify_attempts AS attempts, i.classify_error AS last_error
+           FROM items i LEFT JOIN cards c ON c.item_id = i.id
+           WHERE c.item_id IS NULL AND COALESCE(i.classify_attempts, 0) >= ? ORDER BY i.id""",
+        (max_classify_attempts(),),
+    ))
+
+
+def clear_text(conn: sqlite3.Connection, ids: list[str]) -> int:
+    """Delete raw text and source details for these items now (used for sources whose terms say so)."""
+    n = 0
+    for part in chunks(ids, 500):
+        n += conn.execute(
+            f"UPDATE items SET text=NULL, title=NULL, extra=NULL, text_purged=1 WHERE id IN ({_ph(len(part))})",
+            part,
+        ).rowcount
+    return n
 
 
 # ---------------------------------------------------------------- cards
 
 def save_cards(conn: sqlite3.Connection, cards: Iterable[Any], provider: str, model: str) -> None:
     now = iso(utcnow())
+    rows = []
+    for c in cards:
+        statement, who, solutions = clean_card_fields(c.problem_statement, c.who_has_it, c.existing_solutions)
+        rows.append((
+            c.item_id, int(c.is_problem), statement, who, c.audience, c.frequency,
+            c.severity, c.willingness_to_pay, json.dumps(solutions), int(c.software_solvable),
+            c.app_type, c.build_effort, provider, model, now,
+        ))
     conn.executemany(
         "INSERT OR REPLACE INTO cards (item_id, is_problem, problem_statement, who_has_it, audience, frequency,"
         " severity, willingness_to_pay, existing_solutions, software_solvable, app_type, build_effort,"
         " provider, model, classified_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [
-            (
-                c.item_id, int(c.is_problem), scrub(c.problem_statement), c.who_has_it, c.audience, c.frequency,
-                c.severity, c.willingness_to_pay, json.dumps(c.existing_solutions), int(c.software_solvable),
-                c.app_type, c.build_effort, provider, model, now,
-            )
-            for c in cards
-        ],
+        rows,
     )
 
 
@@ -324,6 +450,11 @@ def insert_cluster(
     conn: sqlite3.Connection, batch_id: str, niche_ids: list[str], stats: dict[str, Any],
     summary: dict[str, Any], member_ids: list[str],
 ) -> int:
+    clean = lambda key, limit: cap(scrub(one_line(summary.get(key))), limit)  # noqa: E731
+    summary = {**summary, "title": clean("title", 120), "problem": clean("problem", 600),
+               "target_user": clean("target_user", 200), "app_concept": clean("app_concept", 500),
+               "search_terms": [cap(scrub(one_line(t)), 80) for t in list(summary.get("search_terms") or [])[:4]
+                                if str(t or "").strip()]}
     cur = conn.execute(
         """INSERT INTO clusters (batch_id, niches, title, problem, target_user, app_concept, app_type, audience,
                build_effort, search_terms, size, distinct_authors, sources, mean_severity, wtp_score,
@@ -375,10 +506,12 @@ def set_existence(conn: sqlite3.Connection, cluster_id: int, data: dict[str, Any
 
 # ---------------------------------------------------------------- specs
 
-def insert_spec(conn: sqlite3.Connection, cluster_id: int, title: str, markdown: str, provider: str, model: str) -> int:
+def insert_spec(conn: sqlite3.Connection, cluster_id: int, title: str, markdown: str, provider: str, model: str,
+                contract: str | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO specs (cluster_id, title, markdown, status, provider, model, created_at) VALUES (?,?,?,?,?,?,?)",
-        (cluster_id, title, markdown, "draft", provider, model, iso(utcnow())),
+        "INSERT INTO specs (cluster_id, title, markdown, status, provider, model, created_at, contract)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (cluster_id, title, markdown, "draft", provider, model, iso(utcnow()), contract),
     )
     return int(cur.lastrowid)
 
@@ -395,7 +528,7 @@ def get_spec(conn: sqlite3.Connection, spec_id: int) -> dict[str, Any] | None:
 
 
 def update_spec(conn: sqlite3.Connection, spec_id: int, **fields: Any) -> None:
-    allowed = {"status", "file_path", "markdown"}
+    allowed = {"status", "file_path", "markdown", "contract"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if sets:
         conn.execute(
@@ -439,14 +572,20 @@ def recent_runs(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any
 
 
 def purge_expired(retention_days: int) -> int:
-    """Delete raw post text older than the retention window. Problem cards (paraphrases) are kept."""
+    """Delete raw post text and source details older than the retention window. Problem cards are kept."""
     cutoff = iso(utcnow() - timedelta(days=retention_days))
     with session() as conn:
-        cur = conn.execute(
-            "UPDATE items SET text=NULL, title=NULL, text_purged=1 WHERE text_purged=0 AND fetched_at < ?",
+        n = conn.execute(
+            "UPDATE items SET text=NULL, title=NULL, extra=NULL, text_purged=1 WHERE text_purged=0 AND fetched_at < ?",
             (cutoff,),
-        )
-        return cur.rowcount
+        ).rowcount
+    if n:
+        conn = connect()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # don't leave old pages in the write-ahead log
+        finally:
+            conn.close()
+    return n
 
 
 def counts(conn: sqlite3.Connection) -> dict[str, int]:

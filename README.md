@@ -39,8 +39,8 @@ better and handles Hindi and Hinglish, but PyTorch is about 2 GB. Without it, cl
 |---|---|
 | Discover | **Find app ideas** runs fetch, prefilter, classify and rank. Each stage can also run on its own. |
 | Ideas | Ranked idea cards filtered by idea type. Shows evidence links, **Check if it exists**, and **Write PRD spec**. |
-| Specs | Review drafts. **Approve & save** writes `specs/<date>-<slug>.md` plus a `.json` contract for build agents. |
-| Problem cards | Every classified post as a table, with CSV export. |
+| Specs | Review drafts in three views: rendered, raw Markdown (the exact file), and the JSON build contract. **Approve & save** writes exactly what you reviewed to `specs/<date>-<spec id>-<slug>.md` plus `.json`, and never overwrites a file. **Reject** on an approved spec moves its files to `specs/revoked/`. |
+| Problem cards | Every classified post as a table, with CSV export (cells starting with `=`, `+`, `-` or `@` get a leading `'` so spreadsheets don't run them). Posts that failed classification 3 times are listed here and no longer re-sent. |
 | Sources & compliance | Source status, licenses, exclusions, live health check, retention purge, LLM token usage. |
 
 ## LLM providers
@@ -53,7 +53,9 @@ The classifier and writer are generic. Pick them in the sidebar, or use `--provi
 | OpenAI | `OPENAI_API_KEY` | OpenAI-compatible adapter, `json_schema` mode |
 | OpenRouter, Groq, Gemini, DeepSeek, Mistral, Together | `<NAME>_API_KEY` | OpenAI-compatible adapter, `json_object` mode |
 | Ollama, LM Studio | none | Local server |
-| Anything else OpenAI-compatible | `CUSTOM_LLM_BASE_URL`, `CUSTOM_LLM_API_KEY` | |
+| Anything else OpenAI-compatible | `CUSTOM_LLM_BASE_URL`, `CUSTOM_LLM_API_KEY` | The stored key is only sent to the stored URL. If you type another URL in the sidebar, paste a key for it. |
+
+`OPENAI_ORG_ID`, `OPENAI_PROJECT_ID` and `OPENAI_CUSTOM_HEADERS` are only sent to OpenAI itself, never to other providers.
 
 If a provider rejects a JSON mode or token parameter, the adapter falls back automatically
 (`json_schema` → `json_object` → prompt-only). Every reply is validated with Pydantic and gets one repair retry.
@@ -74,19 +76,49 @@ subclass `LLMClient` and implement `_complete()`.
 | Bluesky | `BLUESKY_HANDLE` + `BLUESKY_APP_PASSWORD` (required) | Public search returned 403 in Nov 2026, so an app password is needed |
 | YouTube comments | `YOUTUBE_API_KEY` (required) | Comments on tutorial videos |
 
+GitHub queries always include `is:public`, so even a token that can see private repositories only returns public results.
+
 These are excluded on purpose (reasons are in `config/sources.yaml` and the app):
 
 - Google Play scraping and Reddit dumps: off by owner decision.
 - X/Twitter, Quora, LinkedIn, Facebook, Discord, G2/Capterra/Trustpilot, consumercomplaints.in, MouthShut: their terms
   prohibit this kind of access.
 
+## Security
+
+The app has **no login**, so it only accepts connections from this computer. `app/.streamlit/config.toml` (and
+`idea-miner ui`) bind it to `127.0.0.1` and accept only the host names `localhost` and `127.0.0.1`, which also blocks
+DNS-rebinding web pages. To use it from another device, change `address` in that file to `0.0.0.0` only on a network
+you trust: anyone who can reach the port can spend your API quota and approve specs.
+
+Other protections:
+
+- **Posts are kept apart.** Each post is sent to the classifier as escaped JSON with a random label, so one post
+  cannot fake another post's block or name it, and every result must match exactly one label.
+- **Model output is shown literally.** Titles, problems and gaps from the model are escaped in the UI. Spec files
+  have images, hidden Markdown and non-https links removed.
+- **Spec approval is bound to what you saw.** Buttons are tied to one spec, and approval is refused if the spec
+  changed after you viewed it.
+- **Search problems are reported.** A failed existence search is never recorded as "unsolved", and GitHub searches
+  are restricted to public repositories.
+- **Errors stay short.** The UI shows a brief error; the full traceback goes to the terminal.
+
 ## Privacy and compliance built in
 
-- Emails, phone numbers, PAN/Aadhaar-like IDs, @handles and profile URLs are scrubbed before storage and before any
-  LLM call. Usernames are stored only as salted hashes, which are still enough to count distinct people.
-- Raw text is deleted after `retention_days` (default 30). Problem cards keep only paraphrases and links.
-- Specs contain paraphrases and links, never original post text. Evidence and attribution sections are written by
-  code, not the LLM, and existence-check alternatives must come from real search results.
+- Emails, phone numbers (including several in a row), PAN/Aadhaar-like IDs, @handles and profile links (with or
+  without `https://`) are removed from post text and from source details (video, thread and app titles) before
+  storage and before any LLM call. Author names are stored only as salted hashes, which are still enough to count
+  distinct people.
+- Each item keeps a link to the original public post, and that link identifies the account that posted it.
+  Bluesky links use the account's permanent ID; GitHub context names the repository but not its owner.
+- Raw text and source details are deleted after `retention_days` (default 30). The purge runs at the start of every
+  pipeline run and hourly while the app is open, and expired items are never classified. App Store review text is
+  deleted as soon as its card is saved. Deleted text is overwritten in the database file.
+- Problem cards keep model-written paraphrases. The model is instructed not to copy; cards that copy 12 or more
+  consecutive words of a post are rejected; personal data is removed from every model-written field and lengths are
+  capped.
+- Specs contain paraphrases and links. Evidence and attribution sections are written by code, not the LLM, and
+  existence-check alternatives (names and links) come from real search results.
 - Every record carries its source license and terms status.
 
 ## Configuration

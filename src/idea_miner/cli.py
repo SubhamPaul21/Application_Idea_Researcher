@@ -18,11 +18,18 @@ app = typer.Typer(help="Mine real-world problems from legal public sources and t
                   no_args_is_help=True)
 
 
+UI_SECURITY_FLAGS = [
+    "--server.address=127.0.0.1",  # only this computer can reach the app (it has no login)
+    "--server.allowedHosts=localhost", "--server.allowedHosts=127.0.0.1",  # block DNS rebinding
+    "--browser.gatherUsageStats=false",
+]
+
+
 @app.command()
 def ui() -> None:
-    """Launch the Streamlit app."""
-    subprocess.run([sys.executable, "-m", "streamlit", "run", str(config.ROOT / "app" / "streamlit_app.py")],
-                   check=False)
+    """Launch the Streamlit app (bound to this computer only)."""
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(config.ROOT / "app" / "streamlit_app.py"),
+                    *UI_SECURITY_FLAGS], cwd=config.ROOT, check=False)
 
 
 @app.command()

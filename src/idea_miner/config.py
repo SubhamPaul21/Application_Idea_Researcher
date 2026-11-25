@@ -77,9 +77,33 @@ def author_salt() -> str:
     if salt:
         return salt
     path = data_dir() / ".salt"
-    if not path.exists():
-        path.write_text(secrets.token_hex(16), encoding="utf-8")
-    return path.read_text(encoding="utf-8").strip()
+    for _ in range(3):
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            value = ""
+        if len(value) >= 16:
+            return value
+        # Write to a temporary file, then link it into place: the link fails if another process created the salt
+        # first, so every process ends up using the same, complete value. An empty or truncated salt is replaced.
+        tmp = path.with_name(f".salt.{secrets.token_hex(4)}.tmp")
+        tmp.write_text(secrets.token_hex(16), encoding="utf-8")
+        try:
+            if value or path.exists():
+                os.replace(tmp, path)
+            else:
+                os.link(tmp, path)
+        except FileExistsError:
+            pass
+        except OSError:  # file system without hard links: fall back to exclusive create
+            try:
+                with open(path, "x", encoding="utf-8") as f:
+                    f.write(secrets.token_hex(16))
+            except FileExistsError:
+                pass
+        finally:
+            tmp.unlink(missing_ok=True)
+    raise RuntimeError(f"Could not create a valid salt file at {path}")
 
 
 def niche_by_id(niche_id: str) -> dict[str, Any] | None:

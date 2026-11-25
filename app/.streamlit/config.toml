@@ -1,0 +1,11 @@
+# Security defaults for this personal tool (see README "Security").
+# Streamlit reads this file because it sits beside app/streamlit_app.py, whatever folder you start from.
+[server]
+# Only this computer can open the app. To use it from another device on a network you trust, change this
+# to "0.0.0.0" knowing that the app has no login: anyone who can reach the port can use your API keys.
+address = "127.0.0.1"
+# Reject any other Host name (blocks DNS-rebinding pages from driving the app).
+allowedHosts = ["localhost", "127.0.0.1"]
+
+[browser]
+gatherUsageStats = false

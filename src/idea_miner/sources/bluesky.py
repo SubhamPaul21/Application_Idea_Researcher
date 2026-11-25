@@ -2,6 +2,8 @@
 BLUESKY_HANDLE + BLUESKY_APP_PASSWORD (an app password, never the main password)."""
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Iterator
 
 from .. import config
@@ -12,6 +14,18 @@ from .base import FetchContext, Source
 
 PUBLIC_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
 PDS = "https://bsky.social/xrpc"
+_AT_URI = re.compile(r"^at://(did:[a-z0-9]+:[A-Za-z0-9._:%-]+)/app\.bsky\.feed\.post/([A-Za-z0-9._~:-]+)$")
+
+
+def post_key(uri: str) -> str:
+    """Stable item ID that does not contain the account identifier (it is sent to the LLM provider)."""
+    return hashlib.sha256(uri.encode("utf-8")).hexdigest()[:24]
+
+
+def post_url(uri: str, fallback: str = "") -> str:
+    """Public link to the post built from the account DID, which stays valid when the handle changes."""
+    m = _AT_URI.match(uri or "")
+    return f"https://bsky.app/profile/{m.group(1)}/post/{m.group(2)}" if m else fallback
 
 
 class Bluesky(Source):
@@ -60,18 +74,21 @@ class Bluesky(Source):
                 posts = data.get("posts", [])
                 for p in posts:
                     record = p.get("record", {})
-                    handle = (p.get("author") or {}).get("handle", "")
-                    rkey = p.get("uri", "").rsplit("/", 1)[-1]
+                    author = p.get("author") or {}
+                    handle = author.get("handle", "")
+                    uri = p.get("uri", "")
+                    if not uri:
+                        continue
                     yield RawItem(
                         source=self.id,
-                        source_id=p.get("uri", rkey),
-                        url=f"https://bsky.app/profile/{handle}/post/{rkey}",
+                        source_id=post_key(uri),
+                        url=post_url(uri, f"https://bsky.app/profile/{author.get('did') or handle}"),
                         title="",
                         text=record.get("text", ""),
                         created_at=parse_iso(record.get("createdAt")) or utcnow(),
                         engagement={"likes": p.get("likeCount", 0), "replies": p.get("replyCount", 0),
                                     "reposts": p.get("repostCount", 0)},
-                        author=handle,
+                        author=author.get("did") or handle,  # hashed before storage
                         extra={"context": "Bluesky post"},
                     )
                 got += len(posts)

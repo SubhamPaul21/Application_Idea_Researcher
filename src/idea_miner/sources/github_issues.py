@@ -1,6 +1,7 @@
 """GitHub feature requests: open issues labelled enhancement with many reactions."""
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Iterator
 
@@ -21,6 +22,15 @@ def github_headers() -> dict[str, str]:
     return headers
 
 
+_QUALIFIER = re.compile(r"(?<!\S)-?[A-Za-z_-]+:\S*")
+
+
+def public_terms(term: str) -> str:
+    """Search words without GitHub qualifiers (is:, user:, org:, repo:...). Terms can come from model output, and
+    the token may be able to see private repositories, so callers add is:public themselves."""
+    return " ".join(_QUALIFIER.sub(" ", term or "").split())
+
+
 def github_search_interval() -> float:
     # Search API: 30 req/min with a token, 10 req/min anonymous
     return 2.1 if config.env("GITHUB_TOKEN") else 6.5
@@ -37,7 +47,7 @@ class GitHubIssues(Source):
         for term in ctx.terms("github_keywords"):
             for label in labels:
                 label_q = f'label:"{label}"' if " " in label else f"label:{label}"
-                q = (f"{term} is:issue is:open {label_q} reactions:>={min_reactions} "
+                q = (f"{public_terms(term)} is:public is:issue is:open {label_q} reactions:>={min_reactions} "
                      f"created:>={since.date().isoformat()}")
                 params = {"q": q, "sort": "reactions", "order": "desc", "per_page": min(100, ctx.max_results)}
                 try:
@@ -50,9 +60,10 @@ class GitHubIssues(Source):
                     ctx.log(f"GitHub '{term}': {e}")
                     continue
                 for it in data.get("items", []):
-                    if "pull_request" in it:
+                    if "pull_request" in it or (it.get("repository") or {}).get("private"):
                         continue
-                    repo = it.get("repository_url", "").split("/repos/")[-1]
+                    # Keep the repository name but not its owner (often a personal account name).
+                    repo = it.get("repository_url", "").rstrip("/").rsplit("/", 1)[-1]
                     reactions = (it.get("reactions") or {}).get("total_count", 0)
                     yield RawItem(
                         source=self.id,
@@ -64,5 +75,5 @@ class GitHubIssues(Source):
                         engagement={"reactions": reactions, "comments": it.get("comments", 0)},
                         author=(it.get("user") or {}).get("login", ""),
                         extra={"repo": repo,
-                               "context": f"GitHub feature request in {repo} ({reactions} reactions)"},
+                               "context": f"GitHub feature request in the '{repo}' repository ({reactions} reactions)"},
                     )

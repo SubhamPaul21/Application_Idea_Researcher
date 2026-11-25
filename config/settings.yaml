@@ -22,6 +22,7 @@ pipeline:
   classify_batch_size: 6       # items per LLM call (smaller = fewer tokens per request on free tiers)
   classify_workers: 1          # parallel LLM calls; raise to 4 on paid tiers for speed (free tiers: keep 1)
   max_input_chars: 1500        # per item sent to the LLM
+  max_classify_attempts: 3     # items that fail this often are set aside (listed on the Problem cards tab)
   min_cluster_size: 2
   max_ideas: 30                # clusters summarized per "find ideas" run
   summarize_workers: 1

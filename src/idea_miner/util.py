@@ -22,11 +22,12 @@ def parse_iso(value: object) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Convert now so an impossible value (e.g. year 9999 with a negative offset) fails here, not at storage.
+        return dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 def chunks(seq: Sequence[T], size: int) -> Iterator[list[T]]:

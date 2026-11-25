@@ -67,14 +67,29 @@ def fetch_stage(p: RunParams, log: Log, progress: Progress | None = None) -> dic
                 items.append(item)
         except Exception as e:  # noqa: BLE001 - one broken source must not stop the run
             log(f"  {src.label} stopped early: {type(e).__name__}: {e}")
-        with db.session() as conn:
-            added = db.upsert_items(conn, items, niche["id"], src.meta)
+        skipped: list[str] = []
+        try:
+            with db.session() as conn:
+                added = db.upsert_items(conn, items, niche["id"], src.meta,
+                                        on_skip=lambda it, e: skipped.append(type(e).__name__))
+        except Exception as e:  # noqa: BLE001 - a storage problem in one source must not stop the others
+            log(f"  {src.label}: could not store items: {type(e).__name__}")
+            continue
         fetched += len(items)
         new += added
-        log(f"{src.label} · {niche['label']}: {len(items)} fetched, {added} new")
+        note = f", {len(skipped)} malformed skipped" if skipped else ""
+        log(f"{src.label} · {niche['label']}: {len(items)} fetched, {added} new{note}")
     if progress:
         progress(1.0, "Fetch complete")
     return {"fetched": fetched, "new": new}
+
+
+def purge_stage(log: Log) -> int:
+    """Enforce the retention window before any work, so expired raw text is never processed or sent anywhere."""
+    n = db.purge_expired(db.retention_days())
+    if n:
+        log(f"Retention: deleted raw text of {n} items older than {db.retention_days()} days.")
+    return n
 
 
 def filter_stage(log: Log) -> dict[str, int]:
@@ -109,6 +124,7 @@ def run_all(p: RunParams, classifier: LLMClient, writer: LLMClient, log: Log,
                                                  "helper": (helper or writer).name})
     status = "ok"
     try:
+        stats["purged"] = purge_stage(log)
         if "fetch" in stages:
             stats["fetch"] = fetch_stage(p, log, progress)
         if "filter" in stages:
@@ -117,7 +133,7 @@ def run_all(p: RunParams, classifier: LLMClient, writer: LLMClient, log: Log,
             stats["classify"] = classify_stage(p, classifier, log, progress)
         if "cluster" in stages:
             stats["batch_id"] = cluster_stage(p, helper or writer, log, progress)
-    except Exception:
+    except BaseException:  # also record interrupted runs (Streamlit stop, Ctrl+C) as not ok
         status = "error"
         raise
     finally:
