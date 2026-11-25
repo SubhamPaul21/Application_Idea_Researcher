@@ -123,7 +123,8 @@ def make_llm(provider: str, model: str, *, api_key: str | None = None, base_url:
 
         a = config.settings().get("llm", {}).get("anthropic", {})
         client = AnthropicLLM(model, api_key=resolve_key(provider, api_key), effort=a.get("effort", {}),
-                              refusal_fallbacks=a.get("refusal_fallbacks", True))
+                              refusal_fallbacks=a.get("refusal_fallbacks", True),
+                              base_url=a.get("base_url") or "https://api.anthropic.com")
     else:
         from .openai_compat import OpenAICompatLLM
 

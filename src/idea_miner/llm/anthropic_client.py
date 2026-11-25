@@ -18,16 +18,21 @@ _FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "cla
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
+DEFAULT_BASE_URL = "https://api.anthropic.com"
+
+
 class AnthropicLLM(LLMClient):
     provider = "anthropic"
 
     def __init__(self, model: str, *, api_key: str | None = None, effort: dict[str, str] | None = None,
-                 refusal_fallbacks: bool = True) -> None:
+                 refusal_fallbacks: bool = True, base_url: str = DEFAULT_BASE_URL) -> None:
         super().__init__(model)
-        kwargs: dict[str, Any] = {"max_retries": 4}
-        if api_key:
-            kwargs["api_key"] = api_key
-        self.client = anthropic.Anthropic(**kwargs)
+        if not api_key:
+            # Fail closed: without an explicit key the SDK would fall back to ambient credentials
+            # (ANTHROPIC_AUTH_TOKEN, a saved profile, workload identity) that this app never asked for.
+            raise LLMError("No Anthropic API key: set ANTHROPIC_API_KEY in .env or paste a key in the sidebar.")
+        # Explicit api_key and base_url: the SDK then ignores credential env vars and ANTHROPIC_BASE_URL.
+        self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url, max_retries=4)
         self.effort = effort or {}
         self.use_fallbacks = refusal_fallbacks and model in _FALLBACK_MODELS
 

@@ -27,8 +27,8 @@ UI_SECURITY_FLAGS = [
 
 @app.command()
 def ui() -> None:
-    """Launch the Streamlit app (bound to this computer only)."""
-    subprocess.run([sys.executable, "-m", "streamlit", "run", str(config.ROOT / "app" / "streamlit_app.py"),
+    """Launch the Streamlit app (bound to this computer only, protected against being framed by other sites)."""
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(config.ROOT / "app" / "server.py"),
                     *UI_SECURITY_FLAGS], cwd=config.ROOT, check=False)
 
 

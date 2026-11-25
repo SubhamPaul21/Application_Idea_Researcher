@@ -15,7 +15,9 @@ from .util import slugify
 ROOT = Path(os.environ.get("IDEA_MINER_HOME") or Path(__file__).resolve().parents[2])
 CONFIG_DIR = ROOT / "config"
 
-load_dotenv(ROOT / ".env")
+# override=True: the project's .env wins over variables set elsewhere in Windows, so a stale system-wide key
+# (for example an old ANTHROPIC_API_KEY) cannot silently replace the key you put in .env.
+load_dotenv(ROOT / ".env", override=True)
 
 
 def _load(name: str) -> dict[str, Any]:

@@ -91,7 +91,16 @@ The app has **no login**, so it only accepts connections from this computer. `ap
 DNS-rebinding web pages. To use it from another device, change `address` in that file to `0.0.0.0` only on a network
 you trust: anyone who can reach the port can spend your API quota and approve specs.
 
+Start the app with `idea-miner ui` (or `streamlit run app/server.py`). That entry point also adds headers that stop
+other websites from showing the app inside a frame and tricking you into clicking its buttons (clickjacking).
+`streamlit run app/streamlit_app.py` still works and stays on this computer, but without those headers.
+
 Other protections:
+
+- **Keys come only from you.** Claude needs `ANTHROPIC_API_KEY` in `.env` or a key pasted in the sidebar; the app
+  never falls back to other credentials on the machine, and always talks to `https://api.anthropic.com` (change
+  `llm.anthropic.base_url` in `config/settings.yaml` to use a proxy). Values in `.env`, including empty ones,
+  take precedence over environment variables set elsewhere in Windows.
 
 - **Posts are kept apart.** Each post is sent to the classifier as escaped JSON with a random label, so one post
   cannot fake another post's block or name it, and every result must match exactly one label.

@@ -548,3 +548,43 @@ def test_deleted_text_is_overwritten_and_tracebacks_are_not_shown_in_the_ui():
     assert "st.exception(" not in Path(APP).read_text(encoding="utf-8")
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert ".env.*" in gitignore and ".streamlit/secrets.toml" in gitignore
+
+
+# ============================================================================= follow-up: framing and Claude credentials
+def test_every_http_response_forbids_framing_by_other_sites():
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from idea_miner.web_security import SecurityHeadersMiddleware
+
+    async def page(request):
+        return PlainTextResponse("ok", headers={"X-Frame-Options": "ALLOWALL"})  # must be replaced, not duplicated
+
+    client = TestClient(Starlette(routes=[Route("/", page)], middleware=[Middleware(SecurityHeadersMiddleware)]))
+    r = client.get("/")
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    assert r.headers["content-security-policy"] == "frame-ancestors 'self'"
+    assert r.headers["referrer-policy"] == "no-referrer"
+    assert r.headers.get_list("x-frame-options") == ["SAMEORIGIN"]
+
+
+def test_ui_launches_through_the_header_protected_entry_point():
+    import inspect
+
+    server = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
+    assert "st.App(" in server and "SecurityHeadersMiddleware" in server
+    assert '"app" / "server.py"' in inspect.getsource(cli.ui)
+
+
+def test_claude_requires_an_explicit_key_and_ignores_ambient_credentials(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "ambient-token")
+    with pytest.raises(LLMError, match="No Anthropic API key"):
+        factory.make_llm("anthropic", "claude-opus-5-5", track_usage=False)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://evil.invalid")
+    llm = factory.make_llm("anthropic", "claude-opus-5-5", api_key="typed-key", track_usage=False)
+    assert str(llm.client.base_url).startswith("https://api.anthropic.com")
+    assert llm.client.api_key == "typed-key" and llm.client.auth_token is None
