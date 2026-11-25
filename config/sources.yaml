@@ -1,0 +1,141 @@
+# Source registry. Every source the pipeline can touch must have an entry here.
+# implemented: an adapter exists in src/idea_miner/sources/
+# enabled:     false = never fetched (decision recorded in `reason`)
+# key_env / key_required: API key environment variable and whether it is mandatory
+# prefilter_bypass: items are already problem reports (skip the regex prefilter)
+# engagement_weights: how engagement counts combine into the metadata score
+
+sources:
+  hackernews:
+    label: Hacker News
+    implemented: true
+    enabled: true
+    tier: 1
+    access: Official Algolia HN Search API (free, keyless, 10k req/hour/IP)
+    license: HN user content; link back to the item
+    tos_status: sanctioned public API
+    key_env: null
+    prefilter_bypass: false
+    engagement_weights: {points: 1.0, comments: 2.0}
+
+  stackexchange:
+    label: Stack Exchange
+    implemented: true
+    enabled: true
+    tier: 1
+    access: Official API v2.3 (300 req/day without key, 10k with free StackApps key)
+    license: CC BY-SA 4.0 (attribution required)
+    tos_status: sanctioned public API; data dumps NOT used (LLM clause)
+    key_env: STACKAPPS_KEY
+    key_required: false
+    prefilter_bypass: true
+    engagement_weights: {score: 2.0, answers: 1.0, views: 0.01}
+
+  github:
+    label: GitHub Issues
+    implemented: true
+    enabled: true
+    tier: 1
+    access: Official REST search API (10 search req/min anonymous, 30 with token)
+    license: per-repository; link back to the issue
+    tos_status: sanctioned public API
+    key_env: GITHUB_TOKEN
+    key_required: false
+    prefilter_bypass: true
+    labels: [enhancement]
+    engagement_weights: {reactions: 2.0, comments: 1.0}
+
+  apple_reviews:
+    label: Apple App Store reviews
+    implemented: true
+    enabled: true
+    tier: 1
+    access: iTunes Search API + public customer-review RSS/JSON feed
+    license: Apple; paraphrase only, never republish review text
+    tos_status: public feed; store only paraphrases
+    key_env: null
+    prefilter_bypass: true
+    apps_per_term: 3
+    review_pages: 2
+    engagement_weights: {votes: 1.0, low_rating: 1.0}
+
+  cfpb:
+    label: CFPB consumer complaints (US)
+    implemented: true
+    enabled: true
+    tier: 1
+    access: Official CFPB complaint API (free, no key). Narratives are no longer returned, so complaints are aggregated per issue.
+    license: US government public data
+    tos_status: open government data
+    key_env: null
+    prefilter_bypass: true
+    engagement_weights: {complaints: 1.0}
+
+  bluesky:
+    label: Bluesky
+    implemented: true
+    enabled: true
+    tier: 2
+    access: AppView searchPosts via your account (public search returned 403 in Nov 2026). Needs BLUESKY_HANDLE + an app password.
+    license: user content; link back to the post
+    tos_status: sanctioned public API
+    key_env: BLUESKY_APP_PASSWORD
+    key_required: true
+    prefilter_bypass: false
+    engagement_weights: {likes: 1.0, replies: 2.0, reposts: 1.0}
+
+  youtube:
+    label: YouTube comments
+    implemented: true
+    enabled: true
+    tier: 2
+    access: YouTube Data API v3 (10k units/day; search.list has a 100 calls/day bucket)
+    license: user content; link back to the comment
+    tos_status: sanctioned API (key required)
+    key_env: YOUTUBE_API_KEY
+    key_required: true
+    prefilter_bypass: false
+    videos_per_term: 3
+    engagement_weights: {likes: 1.0, replies: 2.0}
+
+  # ---- Deliberately not used ----
+  google_play:
+    label: Google Play reviews
+    implemented: false
+    enabled: false
+    reason: Unofficial scraper (google-play-scraper); left off by owner decision on 2026-11-04.
+  reddit_arctic_shift:
+    label: Reddit (Arctic Shift dumps)
+    implemented: false
+    enabled: false
+    reason: Reddit ToS risk; left off by owner decision on 2026-11-04. Live Reddit API closed to new apps on 2026-10-31.
+  product_hunt:
+    label: Product Hunt
+    implemented: false
+    enabled: false
+    reason: API is non-commercial by default and has no text search; candidate for a later existence-check add-on.
+  x_twitter:
+    label: X / Twitter
+    implemented: false
+    enabled: false
+    reason: Paid per read; scraping prohibited with liquidated damages in the Oct 2026 terms.
+  quora:
+    label: Quora
+    implemented: false
+    enabled: false
+    reason: No API; terms forbid scraping and AI/ML use.
+  linkedin_facebook_discord:
+    label: LinkedIn / Facebook Groups / Discord
+    implemented: false
+    enabled: false
+    reason: No sanctioned route; scraping violates terms.
+  g2_capterra_trustpilot:
+    label: G2 / Capterra / Trustpilot
+    implemented: false
+    enabled: false
+    reason: Terms prohibit scraping; bot protection; paid unblockers only.
+  consumercomplaints_mouthshut:
+    label: consumercomplaints.in / MouthShut
+    implemented: false
+    enabled: false
+    reason: Terms prohibit automated and commercial access.

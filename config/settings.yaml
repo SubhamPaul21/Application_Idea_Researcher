@@ -1,0 +1,51 @@
+data_dir: data
+specs_dir: specs
+
+# Raw post text is deleted after this many days; problem cards (paraphrases) are kept.
+retention_days: 30
+
+http:
+  user_agent: "idea-miner/0.1 (personal non-commercial research tool)"
+  timeout_s: 30
+  # Minimum seconds between requests to each host (politeness + rate limits).
+  min_interval_s:
+    hn.algolia.com: 0.4
+    api.stackexchange.com: 0.5
+    api.github.com: 2.2          # overridden to 6.5s when no GITHUB_TOKEN is set
+    itunes.apple.com: 1.5
+    www.consumerfinance.gov: 1.0
+    public.api.bsky.app: 0.5
+    bsky.social: 0.5
+    www.googleapis.com: 0.3
+
+pipeline:
+  classify_batch_size: 6       # items per LLM call (smaller = fewer tokens per request on free tiers)
+  classify_workers: 1          # parallel LLM calls; raise to 4 on paid tiers for speed (free tiers: keep 1)
+  max_input_chars: 1500        # per item sent to the LLM
+  min_cluster_size: 2
+  max_ideas: 30                # clusters summarized per "find ideas" run
+  summarize_workers: 1
+  # Output cap for one PRD spec. Groq's free tier rejects any single request over 8K tokens/minute
+  # (input + this cap), so keep it at 5000 there. On paid tiers or Claude/OpenAI raise it to 16000.
+  spec_max_tokens: 5000
+
+embeddings:
+  backend: auto                # auto | sentence-transformers | tfidf
+  model: paraphrase-multilingual-MiniLM-L12-v2
+
+llm:
+  defaults:
+    # Tested 2026-11-05: gpt-oss-20b disagreed with 120b on 11 of 36 items and let vendor-only complaints through,
+    # so the classifier (the quality gate) stays on 120b.
+    classifier: {provider: groq, model: openai/gpt-oss-120b}
+    writer: {provider: groq, model: openai/gpt-oss-120b}     # existence checks and PRD specs
+    helper: {provider: groq, model: openai/gpt-oss-20b}      # naming idea clusters (simple summarizing; separate token budget)
+  anthropic:
+    # Effort per task (Claude 4.6+ models). Classification is simple; specs deserve more thought.
+    effort:
+      classify: low
+      summarize: low
+      existence: low
+      spec: high
+    # If Claude declines a request for safety reasons, retry on a fallback model server-side.
+    refusal_fallbacks: true

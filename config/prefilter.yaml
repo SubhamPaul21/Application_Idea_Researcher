@@ -1,0 +1,45 @@
+# Stage 0: cheap regex prefilter. An item passes if any pattern matches (or its source bypasses
+# the prefilter, e.g. low-star reviews) and no negative pattern matches.
+min_chars: 25
+
+patterns:
+  - name: is_there_a_tool
+    regex: "\\b(is|are) there (an?|any|some) (good |simple |free |decent )?(app|apps|tool|tools|software|extension|plugin|script|website|site|service|saas|program|bot|way to)\\b"
+  - name: i_wish
+    regex: "\\b(i|we) wish (there (was|were|is)|someone would|someone made|i could|it (could|would))\\b"
+  - name: how_automate
+    regex: "\\bhow (do|can|could|would|should) (i|we|you|one) (automate|streamline|speed up|bulk)\\b"
+  - name: would_pay
+    regex: "\\b(i'?d|i would|we'?d|we would|i'?ll|happy to|willing to) (happily |gladly )?pay\\b"
+  - name: anyone_know_tool
+    regex: "\\b(does )?(any ?one|any ?body|anybody|anyone here) (know|recommend|use|have)( of)? (an?|any|some|a good) (good |simple )?(tool|app|software|service|way|solution|program)\\b"
+  - name: looking_for_tool
+    regex: "\\b(looking for|searching for|need|want) (an?|some|any) (simple |good |free |better )?(app|tool|software|solution|way|program|service|extension) (to|for|that|which)\\b"
+  - name: tired_of_manual
+    regex: "\\b(tired of|sick of|fed up with) (manually|doing|copying|having to|re-?entering|tracking)\\b"
+  - name: manual_work
+    regex: "\\bmanually (enter|copy|track|update|reconcile|check|export|import|send|create|type)\\w*\\b"
+  - name: spreadsheet_hell
+    regex: "\\bspreadsheet (hell|nightmare|mess)\\b"
+  - name: tedious
+    regex: "\\b(so|incredibly|really|super|extremely|very) (tedious|painful|frustrating|time[- ]consuming)\\b"
+  - name: better_way
+    regex: "\\bthere (has|have|must|needs) to be an? (better|easier|faster|simpler) way\\b"
+  - name: alternative_to
+    regex: "\\b(alternative|replacement) (to|for)\\b"
+  - name: doesnt_support
+    regex: "\\b(doesn'?t|does not|don'?t|do not|can'?t|cannot|won'?t) (support|let me|allow|handle|integrate)\\b"
+  - name: why_cant
+    regex: "\\bwhy (can'?t|cannot|doesn'?t|isn'?t there|is there no)\\b"
+  - name: wastes_time
+    regex: "\\b(waste|wastes|wasted|wasting|spend|spending|lose|losing) (hours|so much time|days|ages)\\b"
+  - name: feature_request
+    regex: "\\b(feature request|would be (great|nice|awesome) if|it would help if|please add)\\b"
+  - name: hinglish_app
+    regex: "\\b(koi|kya koi) (app|tool|software|website) (hai|he|batao)\\b"
+
+negatives:
+  - "\\b(we'?re|we are|now) hiring\\b"
+  - "\\bjob (opening|posting|opportunity)\\b"
+  - "\\b(promo|coupon|referral) code\\b"
+  - "\\bsponsored\\b"

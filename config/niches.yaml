@@ -1,0 +1,121 @@
+# Niches shown in the Streamlit "Niche" dropdown. Add your own by copying a block.
+# Fields:
+#   keywords            generic search terms (Hacker News, Stack Exchange, fallback for others)
+#   github_keywords     GitHub issue search terms (feature requests)
+#   stackexchange_sites api_site_parameter values (softwarerecs, webapps, superuser, money, ...)
+#   app_store_terms     App Store search terms; low-star reviews of the top apps are mined
+#   youtube_terms       YouTube video searches; comments are mined
+#   social_keywords     Bluesky search terms
+#   cfpb_terms          US consumer-finance complaint searches (finance niches only)
+#   github_min_reactions minimum reactions on a GitHub issue (default 5)
+
+niches:
+  - id: developer_tools
+    label: Developer tools & DevOps
+    keywords: [CI pipeline, code review, API testing, logging, deployment, database migration, local development, monorepo]
+    github_keywords: [CLI, integration, export, plugin, automation, dashboard]
+    github_min_reactions: 10
+    stackexchange_sites: [softwarerecs, superuser, devops, softwareengineering]
+    app_store_terms: [ssh terminal, git client, api client]
+    youtube_terms: [github actions tutorial, docker tutorial, vscode extensions]
+    social_keywords: [devtools, CI pipeline, developer experience]
+
+  - id: productivity_automation
+    label: Productivity & workflow automation
+    keywords: [spreadsheet, automate, excel, google sheets, email, calendar, note taking, copy paste]
+    github_keywords: [automation, sync, import csv, calendar, export]
+    stackexchange_sites: [softwarerecs, webapps, superuser]
+    app_store_terms: [to do list, note taking, calendar planner, email client]
+    youtube_terms: [excel automation tutorial, google sheets tutorial, notion workflow]
+    social_keywords: [productivity tool, automate, spreadsheet]
+
+  - id: small_business
+    label: Small business & retail (incl. Indian SMB / kirana)
+    keywords: [invoice, inventory, billing, GST, small business, point of sale, bookkeeping, customer follow up]
+    github_keywords: [invoice, inventory, point of sale, accounting]
+    stackexchange_sites: [softwarerecs, money, webapps]
+    app_store_terms: [invoice maker, inventory management, khata book, billing app, pos]
+    youtube_terms: [GST billing software, inventory management excel, small business accounting]
+    social_keywords: [small business, invoicing, inventory]
+
+  - id: personal_finance
+    label: Personal finance & fintech
+    keywords: [budget, expense tracking, credit card, loan, investment tracking, UPI, tax filing, subscriptions]
+    github_keywords: [budget, finance, expense, portfolio]
+    stackexchange_sites: [money, softwarerecs]
+    app_store_terms: [budget planner, expense tracker, upi payments, credit score]
+    youtube_terms: [budgeting spreadsheet, expense tracker app, income tax return filing]
+    social_keywords: [budgeting app, expense tracking, personal finance]
+    cfpb_terms: [credit report, debt collection, overdraft, money transfer, mortgage]
+
+  - id: education
+    label: Education & teaching
+    keywords: [teacher, grading, lesson plan, students, homework, online course, exam preparation, tuition]
+    github_keywords: [quiz, LMS, flashcards, grading]
+    stackexchange_sites: [softwarerecs, academia, webapps]
+    app_store_terms: [gradebook, flashcards, exam preparation, classroom]
+    youtube_terms: [teacher productivity tips, google classroom tutorial, study planner]
+    social_keywords: [teachers, grading, edtech]
+
+  - id: health_fitness
+    label: Health & fitness
+    keywords: [workout tracking, meal planning, medication reminder, sleep tracking, calorie, habit tracker, doctor appointment, mental health]
+    github_keywords: [fitness, health, habit, nutrition]
+    stackexchange_sites: [softwarerecs, fitness]
+    app_store_terms: [workout tracker, meal planner, medicine reminder, habit tracker]
+    youtube_terms: [meal prep planning, workout tracking app, habit tracker setup]
+    social_keywords: [fitness app, meal planning, habit tracker]
+
+  - id: real_estate
+    label: Real estate & property management
+    keywords: [landlord, tenant, rent collection, property management, maintenance request, lease, real estate agent, housing society]
+    github_keywords: [property management, rental, real estate]
+    stackexchange_sites: [softwarerecs, money, diy]
+    app_store_terms: [property management, rent tracker, real estate crm, society management]
+    youtube_terms: [property management software, landlord tips, real estate crm tutorial]
+    social_keywords: [landlord, property management, rent]
+
+  - id: freelancers_creators
+    label: Freelancers & content creators
+    keywords: [freelance, client management, content calendar, YouTube channel, podcast, video editing, social media scheduling, thumbnail]
+    github_keywords: [video, subtitle, social media, scheduler]
+    stackexchange_sites: [softwarerecs, freelancing, webapps]
+    app_store_terms: [video editor, content planner, social media scheduler, freelancer invoice]
+    youtube_terms: [youtube workflow tips, freelance client management, content calendar notion]
+    social_keywords: [freelancer, content creator, creator tools]
+
+  - id: ecommerce_logistics
+    label: E-commerce & logistics
+    keywords: [shopify, order tracking, shipping, returns, dropshipping, marketplace seller, delivery, warehouse]
+    github_keywords: [shopify, woocommerce, shipping, ecommerce]
+    stackexchange_sites: [softwarerecs, webapps]
+    app_store_terms: [shipping tracker, seller app, delivery management]
+    youtube_terms: [shopify tutorial, amazon seller tips, meesho seller]
+    social_keywords: [ecommerce, shopify, online seller]
+
+  - id: careers_hiring
+    label: Careers, hiring & HR
+    keywords: [job search, resume, interview, hiring, onboarding, timesheet, payroll, leave management]
+    github_keywords: [resume, hiring, timesheet, payroll]
+    stackexchange_sites: [softwarerecs, workplace]
+    app_store_terms: [job search, resume builder, attendance, hr app]
+    youtube_terms: [resume tips, job application tracker, hr management software]
+    social_keywords: [job search, hiring, recruiting]
+
+  - id: home_family
+    label: Home, family & everyday life
+    keywords: [chores, grocery list, parenting, household, home maintenance, family calendar, recipe, pet care]
+    github_keywords: [recipe, grocery, home assistant]
+    stackexchange_sites: [softwarerecs, diy, parenting, cooking]
+    app_store_terms: [grocery list, family organizer, chore tracker, pet care]
+    youtube_terms: [home organization app, meal planning app, family calendar]
+    social_keywords: [parenting, grocery list, household]
+
+  - id: data_ai
+    label: Data & AI tooling
+    keywords: [data cleaning, PDF extraction, LLM, chatbot, web scraping, dashboard, OCR, CSV]
+    github_keywords: [LLM, OCR, PDF, CSV]
+    stackexchange_sites: [softwarerecs, datascience, superuser]
+    app_store_terms: [pdf scanner, ai assistant, ocr]
+    youtube_terms: [pdf to excel, chatgpt automation, power bi tutorial]
+    social_keywords: [LLM tooling, data cleaning, AI agents]
